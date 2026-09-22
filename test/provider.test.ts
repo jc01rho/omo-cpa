@@ -247,6 +247,23 @@ describe("tier-separated provider registration", () => {
     expect(primary.fallbackEligible).toBeUndefined();
     expect(last.fallbackEligible?.()).toBe(false);
   });
+
+  test("model endpoints use the BASE URL saved by login", () => {
+    const built = buildProviderRegistration({
+      catalog: [
+        catalogModel("gpt-5.6-sol"),
+        catalogModel("claude-opus-5"),
+        catalogModel("gemini-3-flash"),
+      ],
+      contextOverrides: new Map(),
+      overrides: {},
+      baseUrl: "http://cpa.example:9443/v1",
+    });
+    const byId = new Map([...built.primaryModels, ...built.lastModels].map((model) => [model.id, model]));
+    expect(byId.get("gpt-5.6-sol")?.baseUrl).toBe("http://cpa.example:9443/v1");
+    expect(byId.get("claude-opus-5")?.baseUrl).toBe("http://cpa.example:9443");
+    expect(byId.get("gemini-3-flash")?.baseUrl).toBe("http://cpa.example:9443/v1beta");
+  });
 });
 
 describe("provider registration shape", () => {
@@ -260,7 +277,12 @@ describe("provider registration shape", () => {
     const path = join(dir, "auth.json");
     try {
       await Bun.write(path, JSON.stringify({
-        cliproxyapi: { access: "senpi-shared", refresh: "senpi-shared", expires: Date.now() + 1000 },
+        cliproxyapi: {
+          access: "senpi-shared",
+          refresh: "senpi-shared",
+          expires: Date.now() + 1000,
+          baseUrl: "http://cpa.example:8317",
+        },
       }));
       expect(readStoredPrimaryCredential(path)).toBe("senpi-shared");
     } finally {
@@ -268,8 +290,8 @@ describe("provider registration shape", () => {
     }
   });
 
-  test("DEFAULT_BASE_URL matches live server", () => {
-    expect(DEFAULT_BASE_URL).toBe("http://152.69.234.237:8317");
+  test("DEFAULT_BASE_URL is a neutral bootstrap before login", () => {
+    expect(DEFAULT_BASE_URL).toBe("http://127.0.0.1:8317");
   });
 
   test("oauth block has all required fields", () => {
@@ -302,20 +324,35 @@ describe("provider registration shape", () => {
   });
 
   test("login returns credentials shaped like an OAuth credential", async () => {
-    // Cannot run real /login interactively. Validate the returned shape only.
-    const mock: LoginCallbacks = { onPrompt: async () => "senpi-fake" };
+    const answers = ["http://cpa.example:8317/v1", "senpi-fake"];
+    const prompts: string[] = [];
+    const mock: LoginCallbacks = {
+      onPrompt: async ({ message }) => {
+        prompts.push(message);
+        return answers.shift() ?? "";
+      },
+    };
     const creds = await login(mock);
+    expect(prompts).toHaveLength(2);
+    expect(creds.baseUrl).toBe("http://cpa.example:8317");
     expect(typeof creds.access).toBe("string");
     expect(creds.access.startsWith("senpi-")).toBe(true);
     expect(typeof creds.expires).toBe("number");
   });
 
   test("login with empty input throws", async () => {
-    await expect(login({ onPrompt: async () => "" })).rejects.toThrow();
+    const answers = ["http://cpa.example:8317", ""];
+    await expect(login({ onPrompt: async () => answers.shift() ?? "" })).rejects.toThrow();
+  });
+
+  test("login rejects a base URL without an explicit port", async () => {
+    await expect(login({ onPrompt: async () => "https://cpa.example" })).rejects.toThrow(/포트/);
   });
 
   test("login works with manual code input fallback", async () => {
-    const creds = await login({ onManualCodeInput: async () => "senpi-manual" });
+    const answers = ["http://cpa.example:8317", "senpi-manual"];
+    const creds = await login({ onManualCodeInput: async () => answers.shift() ?? "" });
+    expect(creds.baseUrl).toBe("http://cpa.example:8317");
     expect(creds.access).toBe("senpi-manual");
   });
 

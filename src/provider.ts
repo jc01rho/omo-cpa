@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { selectEndpoint } from "./endpoint.ts";
 import { getCatalog } from "./catalog.ts";
-import { loadConfig } from "./config.ts";
+import { DEFAULT_BASE_URL, loadConfig, toRoot } from "./config.ts";
 import { redact } from "./redact.ts";
 import { buildTierReport, loadOverrideStore, toOverrideMap } from "./tier.ts";
 import type { OverrideMap, TierReport } from "./tier.ts";
@@ -64,12 +64,14 @@ export interface Credentials {
   access: string;
   refresh: string;
   expires: number;
+  baseUrl?: string;
   [key: string]: unknown;
 }
 
 export interface ProviderData {
   catalog: CatalogModel[];
   contextOverrides: Map<string, { contextWindow: number; maxTokens: number }>;
+  baseUrl?: string;
 }
 
 export interface ProviderRegistrationData extends ProviderData {
@@ -92,17 +94,23 @@ export interface TieredProviderData {
  */
 export function readMigrationSource(): {
   apiKey: string | null;
+  baseUrl: string;
   contextOverrides: Map<string, { contextWindow: number; maxTokens: number }>;
   hasApiKey: boolean;
 } {
-  const { apiKey } = loadConfig();
-  return { apiKey, contextOverrides: new Map(), hasApiKey: !!apiKey };
+  const connection = readConnectionSync();
+  return {
+    apiKey: connection.apiKey || null,
+    baseUrl: connection.baseUrl,
+    contextOverrides: new Map(),
+    hasApiKey: connection.apiKey.length > 0,
+  };
 }
 
 export const PROVIDER_NAME = "cliproxyapi";
 /** Explicit-only provider: its hook removes it from senpi's implicit family expansion. */
 export const LAST_RESORT_PROVIDER_NAME = "cliproxyapi-last";
-export const DEFAULT_BASE_URL = "http://152.69.234.237:8317";
+export { DEFAULT_BASE_URL };
 
 const DECLARED_OVERRIDES: Readonly<Record<string, {
   contextWindow: number;
@@ -164,6 +172,7 @@ function appendDeclaredAliases(catalog: readonly CatalogModel[]): CatalogModel[]
 export function buildProviderRegistration(data: ProviderRegistrationData): TieredProviderData {
   const catalog = appendDeclaredAliases(data.catalog);
   const report = buildTierReport(catalog, data.overrides);
+  const baseUrl = toRoot(data.baseUrl ?? DEFAULT_BASE_URL);
   const stats: Stats = {
     realContext: 0,
     defaultedContext: 0,
@@ -173,7 +182,7 @@ export function buildProviderRegistration(data: ProviderRegistrationData): Tiere
     inputFromDefault: 0,
   };
   const converted = new Map<string, ProviderModel>();
-  for (const model of catalog) converted.set(model.id, toProviderModel(model, data.contextOverrides, stats));
+  for (const model of catalog) converted.set(model.id, toProviderModel(model, data.contextOverrides, stats, baseUrl));
 
   const select = (ids: readonly { id: string }[]): ProviderModel[] => ids.flatMap(({ id }) => {
     const model = converted.get(id);
@@ -195,20 +204,21 @@ export function registerCpaProvider(pi: unknown, data?: ProviderRegistrationData
   const register = (pi as { registerProvider?: unknown }).registerProvider;
   if (typeof register !== "function") return;
   const tiered = data ? buildProviderRegistration(data) : null;
-  const apiKey = readMigrationApiKeySync();
+  const connection = readConnectionSync();
+  const baseUrl = toRoot(data?.baseUrl ?? connection.baseUrl);
   try {
-    register(PROVIDER_NAME, providerConfig("primary", tiered?.primaryModels ?? [], apiKey));
-    register(LAST_RESORT_PROVIDER_NAME, providerConfig("last", tiered?.lastModels ?? [], apiKey));
+    register(PROVIDER_NAME, providerConfig("primary", tiered?.primaryModels ?? [], connection.apiKey, baseUrl));
+    register(LAST_RESORT_PROVIDER_NAME, providerConfig("last", tiered?.lastModels ?? [], connection.apiKey, baseUrl));
   } catch (error) {
     console.error("[omo-cpa] registerProvider threw:", redact((error as Error).message));
     throw error;
   }
 }
 
-function providerConfig(tier: Tier, models: ProviderModel[], apiKey: string | null): ProviderConfig {
+function providerConfig(tier: Tier, models: ProviderModel[], apiKey: string | null, baseUrl: string): ProviderConfig {
   const common: ProviderConfig = {
     name: tier === "primary" ? "CLI Proxy API (CPA)" : "CLI Proxy API (CPA Last Resort)",
-    baseUrl: DEFAULT_BASE_URL,
+    baseUrl,
     authHeader: true,
     ...(apiKey ? { apiKey } : {}),
     api: "openai-responses",
@@ -232,16 +242,16 @@ function providerConfig(tier: Tier, models: ProviderModel[], apiKey: string | nu
 function makeRefreshModels(tier: Tier): (context: RefreshModelsContext) => Promise<ProviderModel[]> {
   return async (context) => {
     const migration = readMigrationSource();
-    const apiKey = credentialApiKey(context.credential)
-      ?? (tier === "last" ? readStoredPrimaryCredential() : null)
-      ?? migration.apiKey;
+    const stored = tier === "last" ? readStoredPrimaryConnection() : null;
+    const apiKey = credentialApiKey(context.credential) ?? stored?.apiKey ?? migration.apiKey;
+    const baseUrl = credentialBaseUrl(context.credential) ?? stored?.baseUrl ?? migration.baseUrl;
     if (!apiKey) {
       await publishBestEffort(context, { kind: "catalog-empty", tier, reason: "추론 키 없음" });
       return [];
     }
     // Both providers refresh independently; the shared cache keeps that from
     // multiplying into a second fan-out of list requests.
-    const fetched = await getCatalog(DEFAULT_BASE_URL, apiKey, { timeoutMs: 15_000 });
+    const fetched = await getCatalog(baseUrl, apiKey, { timeoutMs: 15_000 });
     if (!fetched.ok) {
       await publishBestEffort(context, { kind: "catalog-empty", tier, reason: fetched.reason });
       return [];
@@ -251,6 +261,7 @@ function makeRefreshModels(tier: Tier): (context: RefreshModelsContext) => Promi
       catalog: fetched.models,
       contextOverrides: migration.contextOverrides,
       overrides: toOverrideMap(store),
+      baseUrl,
     });
     const models = tier === "primary" ? built.primaryModels : built.lastModels;
     await publishBestEffort(context, {
@@ -264,16 +275,29 @@ function makeRefreshModels(tier: Tier): (context: RefreshModelsContext) => Promi
   };
 }
 
-/** Read the credential that omo stored after `/login cliproxyapi`. */
-export function readStoredPrimaryCredential(
+export interface StoredConnection {
+  apiKey: string;
+  baseUrl: string;
+}
+
+/** Read the connection that omo stored after `/login cliproxyapi`. */
+export function readStoredPrimaryConnection(
   path = join(homedir(), ".omo", "agent", "auth.json"),
-): string | null {
+): StoredConnection | null {
   try {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-    return credentialApiKey(parsed[PROVIDER_NAME]);
+    const credential = parsed[PROVIDER_NAME];
+    const apiKey = credentialApiKey(credential);
+    const baseUrl = credentialBaseUrl(credential);
+    return apiKey && baseUrl ? { apiKey, baseUrl } : null;
   } catch {
     return null;
   }
+}
+
+/** Backward-compatible helper for callers that only need the inference key. */
+export function readStoredPrimaryCredential(path?: string): string | null {
+  return readStoredPrimaryConnection(path)?.apiKey ?? null;
 }
 
 async function publishBestEffort(context: RefreshModelsContext, persist: unknown): Promise<void> {
@@ -287,26 +311,29 @@ async function publishBestEffort(context: RefreshModelsContext, persist: unknown
 /** Load the live merged catalog for commands that must re-register immediately. */
 export async function loadProviderData(options: {
   apiKey?: string;
+  baseUrl?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   force?: boolean;
 } = {}): Promise<ProviderData> {
   const migration = readMigrationSource();
   const apiKey = options.apiKey ?? migration.apiKey;
+  const baseUrl = toRoot(options.baseUrl ?? migration.baseUrl);
   if (!apiKey) throw new Error("CPA 추론 키가 없습니다. /login cliproxyapi 또는 OMO_CPA_API_KEY를 설정하세요");
-  const result = await getCatalog(DEFAULT_BASE_URL, apiKey, {
+  const result = await getCatalog(baseUrl, apiKey, {
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
     ...(options.force ? { force: true } : {}),
   });
   if (!result.ok) throw new Error(result.reason);
-  return { catalog: result.models, contextOverrides: migration.contextOverrides };
+  return { catalog: result.models, contextOverrides: migration.contextOverrides, baseUrl };
 }
 
 function toProviderModel(
   model: CatalogModel,
   contextOverrides: Map<string, { contextWindow: number; maxTokens: number }>,
   stats: Stats,
+  baseUrl: string,
 ): ProviderModel {
   const declared = DECLARED_OVERRIDES[model.id];
   const curated = contextOverrides.get(model.id);
@@ -355,7 +382,7 @@ function toProviderModel(
     contextWindow,
     maxTokens,
     api,
-    baseUrl: `${DEFAULT_BASE_URL}${endpoint.baseUrlSuffix}`,
+    baseUrl: `${baseUrl}${endpoint.baseUrlSuffix}`,
     upstreamModelId: declared?.upstreamModelId,
     thinkingLevelMap: model.id.startsWith("gpt-5.6") ? {
       off: "none", minimal: "minimal", low: "low", medium: "medium",
@@ -383,9 +410,20 @@ function credentialApiKey(credential: unknown): string | null {
   return typeof access === "string" && access.length > 0 ? access : null;
 }
 
+function credentialBaseUrl(credential: unknown): string | null {
+  if (!credential || typeof credential !== "object") return null;
+  const value = (credential as { baseUrl?: unknown }).baseUrl;
+  return typeof value === "string" && value.length > 0 ? toRoot(value) : null;
+}
+
 /** Synchronous because provider registration itself is synchronous and in-memory. */
-function readMigrationApiKeySync(): string | null {
-  return process.env["OMO_CPA_API_KEY"]?.trim() || readStoredPrimaryCredential();
+function readConnectionSync(): StoredConnection {
+  const stored = readStoredPrimaryConnection();
+  const loaded = loadConfig();
+  return {
+    apiKey: process.env["OMO_CPA_API_KEY"]?.trim() || stored?.apiKey || "",
+    baseUrl: toRoot(process.env["OMO_CPA_BASE_URL"]?.trim() || stored?.baseUrl || loaded.config?.root || DEFAULT_BASE_URL),
+  };
 }
 
 /** Kept for call-site compatibility; there is no longer a file to migrate. */
@@ -394,23 +432,38 @@ export function migrateConfigBackground(): void {
 }
 
 export async function login(callbacks: LoginCallbacks): Promise<Credentials> {
-  const prompt = async (): Promise<string> => {
+  const prompt = async (message: string, placeholder: string): Promise<string> => {
     if (typeof callbacks.onPrompt === "function") {
-      return callbacks.onPrompt({
-        message: "CPA 추론 키(Inference Key)를 입력하세요",
-        placeholder: "senpi-... (CPA 추론 키)",
-      });
+      return callbacks.onPrompt({ message, placeholder });
     }
     if (typeof callbacks.onManualCodeInput === "function") return callbacks.onManualCodeInput();
     throw new Error("CPA /login: 입력 콜백이 없어 건너뜁니다 — OMO_CPA_API_KEY를 대신 설정하세요");
   };
-  const key = (await prompt()).trim();
+  const rawBaseUrl = (await prompt(
+    "CPA BASE URL을 입력하세요 (포트 포함)",
+    "http://host:8317",
+  )).trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(rawBaseUrl);
+  } catch {
+    throw new Error("CPA BASE URL 형식이 올바르지 않습니다");
+  }
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.port) {
+    throw new Error("CPA BASE URL은 http(s)와 명시적 포트를 포함해야 합니다");
+  }
+  const baseUrl = toRoot(parsed.toString());
+  const key = (await prompt(
+    "CPA 추론 키(Inference Key)를 입력하세요",
+    "senpi-... (CPA 추론 키)",
+  )).trim();
   if (!key) throw new Error("빈 키");
   if (!key.startsWith("senpi-")) console.warn("[omo-cpa] 수집된 키가 senpi- 프리픽스와 다릅니다");
   return {
     access: key,
     refresh: key,
     expires: Date.now() + 1000 * 60 * 60 * 24 * 365,
+    baseUrl,
   };
 }
 

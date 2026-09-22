@@ -30,6 +30,7 @@ import {
   loadProviderData,
   migrateConfigBackground,
   PROVIDER_NAME,
+  readStoredPrimaryConnection,
   registerCpaProvider,
 } from "./provider.ts";
 import type { ProviderData, TieredProviderData } from "./provider.ts";
@@ -99,7 +100,8 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
   /** Load the live catalog and recompute tier sizes. Never throws. */
   async function refresh(force = false): Promise<void> {
     try {
-      const loaded = loadConfig();
+      const stored = readStoredPrimaryConnection();
+      const loaded = loadConfig(stored?.apiKey, stored?.baseUrl);
       state.config = loaded.config;
       state.apiKey = loaded.apiKey;
       state.managementKey = loaded.managementKey;

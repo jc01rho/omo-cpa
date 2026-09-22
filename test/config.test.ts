@@ -48,6 +48,14 @@ describe("loadConfig — independent of omo's own config files", () => {
     expect(loaded.apiKey).toBe("from-login");
   });
 
+  test("an explicit BASE URL from /login wins over the environment", () => {
+    const loaded = withEnv(
+      { OMO_CPA_BASE_URL: "http://env.example:9000" },
+      () => loadConfig("from-login", "http://login.example:8317/v1"),
+    );
+    expect(loaded.config?.root).toBe("http://login.example:8317");
+  });
+
   test("the config module names no omo-owned file", async () => {
     const source = await Bun.file(new URL("../src/config.ts", import.meta.url)).text();
     expect(source).not.toContain("models.json");

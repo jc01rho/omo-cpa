@@ -21,7 +21,13 @@ import {
 import { PRIMARY_FAMILIES } from "../src/tier-types.ts";
 import type { CatalogModel, TierDecision } from "../src/tier-types.ts";
 
-const ROOT = "http://152.69.234.237:8317";
+function requiredRoot(): string {
+  const value = process.env["OMO_CPA_BASE_URL"]?.trim();
+  if (!value) throw new Error("OMO_CPA_BASE_URL is required for live verification");
+  return value;
+}
+
+const ROOT = requiredRoot();
 
 function registryFor(catalog: CatalogModel[], decisions: TierDecision[]) {
   const tiers = new Map(decisions.map(({ id, tier }) => [id, tier]));
