@@ -30,6 +30,11 @@ export interface CatalogModel {
   inputModalities: string[] | null;
   outputModalities: string[] | null;
   thinking: boolean | null;
+  /**
+   * Set only for a declared alias. The alias id is a cosmetic label, so the
+   * classifier judges the upstream id instead of the alias id.
+   */
+  upstreamModelId?: string;
 }
 
 /** Why a model landed in its tier. Shown to the user, so it must be specific. */

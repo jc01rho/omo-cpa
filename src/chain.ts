@@ -64,6 +64,58 @@ function qualify(provider: string, id: string): string {
   return `${provider}/${id}`;
 }
 
+/**
+ * Fill the primary section so every family that is present gets a seat before any
+ * family gets a second one, then spend the remaining budget in capability order.
+ * A flat top-N lets the two families with the largest context window take every
+ * seat, so a single upstream outage skips the other five families entirely.
+ * Models without a family keep the plain capability order, which is what the
+ * truncation tests describe.
+ */
+function selectPrimary(
+  rankedPrimary: readonly CatalogModel[],
+  familyOf: ReadonlyMap<string, TierDecision["family"]>,
+  targetId: string,
+): string[] {
+  const candidates = rankedPrimary.filter(({ id }) => id !== targetId);
+  const grouped = candidates.some(({ id }) => familyOf.get(id));
+  if (!grouped) return candidates.slice(0, PRIMARY_CHAIN_LIMIT).map(({ id }) => id);
+
+  const buckets = new Map<string, string[]>();
+  const none: string[] = [];
+  for (const { id } of candidates) {
+    const family = familyOf.get(id);
+    if (!family) { none.push(id); continue; }
+    const bucket = buckets.get(family);
+    if (bucket) bucket.push(id);
+    else buckets.set(family, [id]);
+  }
+  const chosen: string[] = [];
+  const seen = new Set<string>();
+  const families = [...buckets.keys()].sort();
+  let round = 0;
+  while (chosen.length < PRIMARY_CHAIN_LIMIT) {
+    let advanced = false;
+    for (const family of families) {
+      const id = buckets.get(family)?.[round];
+      if (!id || seen.has(id)) continue;
+      chosen.push(id);
+      seen.add(id);
+      advanced = true;
+      if (chosen.length >= PRIMARY_CHAIN_LIMIT) break;
+    }
+    if (!advanced) break;
+    round++;
+  }
+  for (const id of none) {
+    if (chosen.length >= PRIMARY_CHAIN_LIMIT) break;
+    if (seen.has(id)) continue;
+    chosen.push(id);
+    seen.add(id);
+  }
+  return chosen;
+}
+
 function tierDecisionsById(decisions: readonly TierDecision[]): Map<string, Tier> {
   const tiers = new Map<string, Tier>();
   for (const { id, tier } of decisions) {
@@ -111,6 +163,7 @@ export function generateFallbackChains(input: GenerateFallbackChainsInput): Fall
     .filter(({ tier }) => tier === "primary")
     .map(({ model }) => model)
     .sort(compareCapability);
+  const familyOf = new Map(input.decisions.map((d) => [d.id, d.family]));
   const rankedLast = models
     .filter(({ tier }) => tier === "last")
     .map(({ model }) => model)
@@ -125,10 +178,8 @@ export function generateFallbackChains(input: GenerateFallbackChainsInput): Fall
 
   return targets.map((target) => {
     const targetId = target.model.id;
-    const primaryEntries = rankedPrimary
-      .filter(({ id }) => id !== targetId)
-      .slice(0, PRIMARY_CHAIN_LIMIT)
-      .map(({ id }) => qualify(input.providers.primary, id));
+    const primaryEntries = selectPrimary(rankedPrimary, familyOf, targetId)
+      .map((id) => qualify(input.providers.primary, id));
     const lastEntries = rankedLast
       .filter(({ id }) => id !== targetId)
       .slice(0, LAST_RESORT_CHAIN_LIMIT)

@@ -6,6 +6,8 @@ import {
   PRIMARY_CHAIN_LIMIT,
 } from "../src/chain.ts";
 import type { FallbackChain } from "../src/chain.ts";
+import { classify } from "../src/tier.ts";
+import { PRIMARY_FAMILIES } from "../src/tier-types.ts";
 import type { CatalogModel, Tier, TierDecision } from "../src/tier-types.ts";
 
 const providers = { primary: "cpa-primary", last: "cpa-last" } as const;
@@ -215,7 +217,36 @@ describe("generateFallbackChains", () => {
     expect(entries.at(-1)).toBe(`${providers.last}/junk-free`);
   });
 
-  test("8a. zero primaries produces a tail-only chain", () => {
+  test("8. every available primary family appears before last-resort entries despite capability skew", () => {
+    const primary = PRIMARY_FAMILIES.flatMap((family) =>
+      Array.from({ length: 3 }, (_, index) => model(`${family}-${index}`, {
+        contextLength: family === "gemini" || family === "muse" ? 1_048_576 : 100_000 - index,
+        maxTokens: 8_000 - index,
+      })),
+    );
+    const last = [model("junk-a"), model("junk-b")];
+    const catalog = [...primary, ...last];
+    const decisions = classify(catalog);
+    const generated = generateFallbackChains({
+      catalog,
+      decisions,
+      providers,
+      targets: primary.map(({ id }) => id),
+    });
+    const familyByQualifiedId = new Map(decisions.map(({ id, family }) => [`${providers.primary}/${id}`, family]));
+
+    for (const chain of generated) {
+      const firstLast = chain.entries.findIndex((entry) => entry.startsWith(`${providers.last}/`));
+      const primaryEntries = firstLast < 0 ? chain.entries : chain.entries.slice(0, firstLast);
+      const represented = new Set(primaryEntries.flatMap((entry) => {
+        const family = familyByQualifiedId.get(entry);
+        return family ? [family] : [];
+      }));
+      expect(represented, chain.target).toEqual(new Set(PRIMARY_FAMILIES));
+    }
+  });
+
+  test("9a. zero primaries produces a tail-only chain", () => {
     const generated = generateFallbackChains(input([
       ["cheap-target", "last"],
       ["cheap-backup", "last"],
@@ -224,7 +255,7 @@ describe("generateFallbackChains", () => {
     expect(chainFor(generated, "cheap-target").entries).toEqual([`${providers.last}/cheap-backup`]);
   });
 
-  test("8b. zero last-resort models produces a primary-only chain without an empty tail artifact", () => {
+  test("9b. zero last-resort models produces a primary-only chain without an empty tail artifact", () => {
     const generated = generateFallbackChains(input([
       ["gpt-target", "primary"],
       ["claude-backup", "primary"],
@@ -233,11 +264,11 @@ describe("generateFallbackChains", () => {
     expect(chainFor(generated, "gpt-target").entries).toEqual([`${providers.primary}/claude-backup`]);
   });
 
-  test("8c. an empty catalog produces no chains", () => {
+  test("9c. an empty catalog produces no chains", () => {
     expect(generateFallbackChains({ catalog: [], decisions: [], providers, targets: ["missing"] })).toEqual([]);
   });
 
-  test("8d. a single-model catalog produces an empty, non-self-referencing chain", () => {
+  test("9d. a single-model catalog produces an empty, non-self-referencing chain", () => {
     const args = input([["only", "primary"]], ["only"]);
     const generated = generateFallbackChains(args);
 

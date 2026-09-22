@@ -158,7 +158,11 @@ export { DECLARED_OVERRIDES };
 /** Build both disjoint provider model sets from the one merged endpoint catalog. */
 export function buildProviderRegistration(data: ProviderRegistrationData): TieredProviderData {
   const catalog = appendDeclaredAliases(data.catalog);
-  const report = buildTierReport(catalog, data.overrides);
+  const upstreamByAlias: Record<string, string> = {};
+  for (const [id, declared] of Object.entries(DECLARED_OVERRIDES)) {
+    if (declared.upstreamModelId) upstreamByAlias[id] = declared.upstreamModelId;
+  }
+  const report = buildTierReport(catalog, data.overrides, upstreamByAlias);
   const stats: Stats = {
     realContext: 0,
     defaultedContext: 0,
@@ -288,6 +292,7 @@ function appendDeclaredAliases(catalog: readonly CatalogModel[]): CatalogModel[]
       // Upstream identity is stronger than a cosmetic alias label: it lets the
       // classifier see both the real family and a verified free-tier marker.
       displayName: declared.upstreamModelId ?? id,
+      upstreamModelId: declared.upstreamModelId,
       contextLength: null,
       maxTokens: null,
       inputModalities: declared.input.map((item) => item.toUpperCase()),

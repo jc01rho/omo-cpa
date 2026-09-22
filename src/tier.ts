@@ -192,8 +192,12 @@ export type OverrideMap = Record<string, Tier>;
  * `overrides` is a plain map so the classifier never has to know that a store,
  * a file, or a user exists.
  */
-export function classify(models: CatalogModel[], overrides: OverrideMap = {}): TierDecision[] {
-  return models.map((m) => classifyOne(m, overrides[m.id]));
+export function classify(
+  models: CatalogModel[],
+  overrides: OverrideMap = {},
+  upstreamByAlias: Readonly<Record<string, string>> = {},
+): TierDecision[] {
+  return models.map((m) => classifyOne(m, overrides[m.id], upstreamByAlias[m.id] ?? m.upstreamModelId));
 }
 
 function decide(id: string, tier: Tier, family: PrimaryFamily | null, reason: string, overridden: boolean): TierDecision {
@@ -211,8 +215,13 @@ function decide(id: string, tier: Tier, family: PrimaryFamily | null, reason: st
  *   3. family via id            -> primary (senpi semantics)
  *   4. family via displayName   -> primary (the alias rescue)
  *   5. otherwise                -> last
+ *
+ * A declared alias is the exception to rule 3: its own id is a cosmetic label
+ * (`gpt-spark` merely looks like gpt) and its real identity is the upstream id.
+ * Such an alias is classified exactly as if the upstream id were the model, so
+ * a free upstream stays last and a genuine primary-family upstream stays primary.
  */
-function classifyOne(m: CatalogModel, override: Tier | undefined): TierDecision {
+function classifyOne(m: CatalogModel, override: Tier | undefined, upstreamId?: string): TierDecision {
   if (override) {
     // The family is still reported when we can name it, so the user can see
     // what they promoted; it is suppressed for a demotion by `decide`.
@@ -223,17 +232,21 @@ function classifyOne(m: CatalogModel, override: Tier | undefined): TierDecision 
   if (!isChatCapable(m)) {
     return decide(m.id, "last", null, nonChatReason(m), false);
   }
-  if (hasFreeMarker(m)) {
+  const identity: CatalogModel = upstreamId === undefined ? m : { ...m, id: upstreamId, displayName: upstreamId };
+  if (hasFreeMarker(identity)) {
     return decide(m.id, "last", null, "free / zero-cost marker", false);
   }
-  const byId = familyFromId(m.id);
-  if (byId) return decide(m.id, "primary", byId, `family ${byId} via id`, false);
-
-  const byName = familyFromDisplayName(m.displayName);
-  if (byName) {
-    return decide(m.id, "primary", byName, `family ${byName} via displayName "${m.displayName}"`, false);
+  const byId = familyFromId(identity.id);
+  if (byId) {
+    const via = upstreamId === undefined ? "id" : `upstream ${upstreamId}`;
+    return decide(m.id, "primary", byId, `family ${byId} via ${via}`, false);
   }
-  return decide(m.id, "last", null, "no primary family matched", false);
+
+  const byName = familyFromDisplayName(identity.displayName);
+  if (byName) {
+    return decide(m.id, "primary", byName, `family ${byName} via displayName "${identity.displayName}"`, false);
+  }
+  return decide(m.id, "last", null, upstreamId === undefined ? "no primary family matched" : `upstream ${upstreamId} matches no primary family`, false);
 }
 
 /** An override whose model id is not in the current catalog. Kept, not dropped. */
@@ -268,8 +281,12 @@ export interface TierReport {
  * override for a momentarily absent model is far more likely to be a live
  * preference than a mistake. Dropping it would quietly undo the user's choice.
  */
-export function buildTierReport(models: CatalogModel[], overrides: OverrideMap = {}): TierReport {
-  const decisions = classify(models, overrides);
+export function buildTierReport(
+  models: CatalogModel[],
+  overrides: OverrideMap = {},
+  upstreamByAlias: Readonly<Record<string, string>> = {},
+): TierReport {
+  const decisions = classify(models, overrides, upstreamByAlias);
   const present = new Set(models.map((m) => m.id));
   const inactiveOverrides: InactiveOverride[] = Object.entries(overrides)
     .filter(([id]) => !present.has(id))
