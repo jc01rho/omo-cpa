@@ -285,7 +285,9 @@ function appendDeclaredAliases(catalog: readonly CatalogModel[]): CatalogModel[]
     models.push({
       id,
       ownedBy: null,
-      displayName: declared.name ?? id,
+      // Upstream identity is stronger than a cosmetic alias label: it lets the
+      // classifier see both the real family and a verified free-tier marker.
+      displayName: declared.upstreamModelId ?? id,
       contextLength: null,
       maxTokens: null,
       inputModalities: declared.input.map((item) => item.toUpperCase()),
@@ -341,7 +343,7 @@ function toProviderModel(
 
   return {
     id: model.id,
-    name: (model.displayName?.replace(/^\*/, "") || declared?.name || model.id),
+    name: (declared?.name || model.displayName?.replace(/^\*/, "") || model.id),
     reasoning: model.thinking ?? !!declared,
     input,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
