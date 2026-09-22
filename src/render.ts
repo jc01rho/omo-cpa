@@ -1,4 +1,4 @@
-import type { CpaConfig, DriftReport, HealthSnapshot, UsageResult } from "./types.ts";
+import type { CpaConfig, HealthSnapshot, UsageResult } from "./types.ts";
 
 /** East-Asian-aware display width, so Korean text never breaks column alignment. */
 export function displayWidth(text: string): number {
@@ -25,59 +25,46 @@ const STATE_LABEL: Record<HealthSnapshot["state"], string> = {
 };
 
 /** One-line summary suitable for the TUI footer. */
-export function renderStatusLine(drift: DriftReport | null, health: HealthSnapshot): string {
+export function renderStatusLine(tiers: TierCounts | null, health: HealthSnapshot): string {
   const parts: string[] = [];
   parts.push(`CPA ${STATE_LABEL[health.state]}`);
-  if (drift) {
-    parts.push(drift.dead.length === 0 ? `모델 ${drift.healthy}종 정상` : `죽은 모델 ${drift.dead.length}종`);
-  }
+  if (tiers) parts.push(`주력 ${tiers.primary}종 · 최후 ${tiers.last}종`);
   return parts.join(" · ");
+}
+
+/** Live tier sizes, derived from the catalog. */
+export interface TierCounts {
+  primary: number;
+  last: number;
+  chatUnfit: number;
 }
 
 export interface ReportInput {
   config: CpaConfig;
-  drift: DriftReport | null;
-  driftReason: string | null;
+  tiers: TierCounts | null;
+  tierReason: string | null;
   health: HealthSnapshot;
   usage: UsageResult;
-  refs?: { ref: string; line: number }[];
-  substitutionEnabled: boolean;
 }
 
 /** Full multi-line report for the /cpa command and the CLI. */
 export function renderReport(input: ReportInput): string {
-  const { config, drift, driftReason, health, usage, refs, substitutionEnabled } = input;
+  const { config, tiers, tierReason, health, usage } = input;
   const L: string[] = [];
 
   L.push("CPA 상태");
   L.push("─".repeat(72));
   L.push(`서버        ${config.root}`);
-  L.push(`provider    ${config.providers.map((p) => p.name).join(", ") || "(없음)"}`);
   L.push(`상태        ${STATE_LABEL[health.state]} · ${health.detail}`);
   L.push("");
 
-  L.push("모델 드리프트");
+  L.push("모델 티어");
   L.push("─".repeat(72));
-  if (!drift) {
-    L.push(`  확인 불가 · ${driftReason ?? "이유 불명"}`);
-  } else if (drift.dead.length === 0) {
-    L.push(`  정상 · 선언 ${drift.checked}종 전부 서버에 존재 (서버 ${drift.live}종 서빙)`);
+  if (!tiers) {
+    L.push(`  확인 불가 · ${tierReason ?? "이유 불명"}`);
   } else {
-    L.push(`  선언 ${drift.checked}종 중 ${drift.dead.length}종이 서버에 없음 (서버 ${drift.live}종 서빙)`);
-    L.push("");
-    for (const d of drift.dead) {
-      const hits = refs?.filter((r) => r.ref === d.ref) ?? [];
-      const where = hits.length > 0 ? ` · omo.jsonc ${hits.length}곳 (L${hits.slice(0, 5).map((h) => h.line).join(", L")}${hits.length > 5 ? ", …" : ""})` : "";
-      L.push(`  ✗ ${d.ref}${where}`);
-      L.push(d.substitute
-        ? `      대체 후보: ${d.substitute.id} (${d.substitute.why})`
-        : `      대체 후보 없음 — 직접 골라야 합니다`);
-    }
-    L.push("");
-    L.push(substitutionEnabled
-      ? "  자동 대체: 켜짐 — 요청 시 대체 후보가 있는 모델만 교체합니다"
-      : "  자동 대체: 꺼짐 (경고만) — OMO_CPA_SUBSTITUTE=1 로 켤 수 있습니다");
-    L.push("  omo 설정은 읽기만 합니다. 위 줄 번호를 직접 고치세요.");
+    L.push(`  주력 ${tiers.primary}종 · 최후 ${tiers.last}종 · 대화 불가 ${tiers.chatUnfit}종`);
+    L.push("  티어는 실시간 카탈로그에서 산출합니다. omo 설정 파일은 읽지도 쓰지도 않습니다.");
   }
   L.push("");
 

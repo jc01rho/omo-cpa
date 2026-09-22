@@ -3,12 +3,8 @@
 export interface ProviderConfig {
   /** omo provider name, e.g. "local-proxy". */
   name: string;
-  /** baseUrl as configured in models.json, e.g. http://host:8317/v1 */
-  baseUrl: string;
   /** CPA server root with the API suffix stripped, e.g. http://host:8317 */
   root: string;
-  /** Model ids omo declares for this provider. */
-  declared: string[];
 }
 
 export interface CpaConfig {
@@ -26,36 +22,6 @@ export interface CpaConfig {
 export type CatalogResult =
   | { ok: true; models: string[]; fetchedAt: number; source: "network" | "cache" }
   | { ok: false; reason: string; models: string[] | null; fetchedAt: number | null };
-
-export interface Substitute {
-  id: string;
-  score: number;
-  why: string;
-}
-
-export interface DeadModel {
-  provider: string;
-  id: string;
-  ref: string;
-  substitute: Substitute | null;
-}
-
-export interface DriftReport {
-  /** Number of declared model ids compared. */
-  checked: number;
-  /** Number of models the CPA server actually serves. */
-  live: number;
-  dead: DeadModel[];
-  healthy: number;
-}
-
-/** A textual reference found in omo.jsonc (routing/fallback chains). */
-export interface ConfigRef {
-  line: number;
-  provider: string;
-  id: string;
-  ref: string;
-}
 
 export type HealthState = "ok" | "degraded" | "down" | "rate_limited" | "unknown";
 

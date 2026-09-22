@@ -1,7 +1,4 @@
 /** CPA provider registration and catalog-to-runtime model conversion. */
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { fetchCatalog, selectEndpoint } from "./endpoint.ts";
 import { loadConfig } from "./config.ts";
 import { redact } from "./redact.ts";
@@ -83,43 +80,19 @@ export interface TieredProviderData {
   stats: Stats;
 }
 
-/** Read the existing omo config only as a migration source. Never writes it. */
-export async function readMigrationSource(): Promise<{
+/**
+ * Resolve the inference key. The plugin is independent of omo's `models.json`:
+ * the key comes from `/login` (delivered through the oauth credential) or from
+ * `OMO_CPA_API_KEY`. `contextOverrides` stays in the shape callers expect and is
+ * always empty, since curated limits used to come from that file.
+ */
+export function readMigrationSource(): {
   apiKey: string | null;
   contextOverrides: Map<string, { contextWindow: number; maxTokens: number }>;
   hasApiKey: boolean;
-}> {
-  const { apiKey } = await loadConfig();
-  const contextOverrides = new Map<string, { contextWindow: number; maxTokens: number }>();
-  const modelsJson = join(homedir(), ".omo", "agent", "models.json");
-  try {
-    const raw = await Bun.file(modelsJson).text();
-    const parsed = JSON.parse(raw) as { providers?: Record<string, unknown> };
-    for (const provRaw of Object.values(parsed.providers ?? {})) {
-      const models = (provRaw as { models?: unknown })?.models;
-      if (!Array.isArray(models)) continue;
-      for (const entry of models) {
-        if (!entry || typeof entry !== "object") continue;
-        const rec = entry as Record<string, unknown>;
-        const id = typeof rec["id"] === "string"
-          ? rec["id"]
-          : typeof rec["name"] === "string" ? rec["name"] : null;
-        if (!id) continue;
-        const contextWindow = positiveNumber(rec["contextWindow"]);
-        const maxTokens = positiveNumber(rec["maxTokens"]);
-        if (contextWindow === 0) continue;
-        const current = contextOverrides.get(id) ?? { contextWindow, maxTokens };
-        if (contextWindow < current.contextWindow) current.contextWindow = contextWindow;
-        if (maxTokens > 0 && (current.maxTokens === 0 || maxTokens < current.maxTokens)) {
-          current.maxTokens = maxTokens;
-        }
-        contextOverrides.set(id, current);
-      }
-    }
-  } catch {
-    // Read-only migration failure must not break a session.
-  }
-  return { apiKey, contextOverrides, hasApiKey: !!apiKey };
+} {
+  const { apiKey } = loadConfig();
+  return { apiKey, contextOverrides: new Map(), hasApiKey: !!apiKey };
 }
 
 export const PROVIDER_NAME = "local-proxy";
@@ -251,7 +224,7 @@ function providerConfig(tier: Tier, models: ProviderModel[], apiKey: string | nu
 
 function makeRefreshModels(tier: Tier): (context: RefreshModelsContext) => Promise<ProviderModel[]> {
   return async (context) => {
-    const migration = await readMigrationSource();
+    const migration = readMigrationSource();
     const apiKey = credentialApiKey(context.credential) ?? migration.apiKey;
     if (!apiKey) {
       await publishBestEffort(context, { kind: "catalog-empty", tier, reason: "추론 키 없음" });
@@ -294,7 +267,7 @@ export async function loadProviderData(options: {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
 } = {}): Promise<ProviderData> {
-  const migration = await readMigrationSource();
+  const migration = readMigrationSource();
   const apiKey = options.apiKey ?? migration.apiKey;
   if (!apiKey) throw new Error("CPA 추론 키가 없습니다. /login local-proxy 또는 OMO_CPA_API_KEY를 설정하세요");
   const result = await fetchCatalog(DEFAULT_BASE_URL, apiKey, {
@@ -385,30 +358,14 @@ function credentialApiKey(credential: unknown): string | null {
   return typeof access === "string" && access.length > 0 ? access : null;
 }
 
-function positiveNumber(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
-}
-
 /** Synchronous because provider registration itself is synchronous and in-memory. */
 function readMigrationApiKeySync(): string | null {
-  const envKey = process.env["OMO_CPA_API_KEY"]?.trim();
-  if (envKey) return envKey;
-  try {
-    const parsed = JSON.parse(readFileSync(join(homedir(), ".omo", "agent", "models.json"), "utf8")) as {
-      providers?: Record<string, { apiKey?: unknown }>;
-    };
-    const key = parsed.providers?.[PROVIDER_NAME]?.apiKey;
-    return typeof key === "string" && key.length > 0 ? key : null;
-  } catch {
-    return null;
-  }
+  return process.env["OMO_CPA_API_KEY"]?.trim() || null;
 }
 
-/** Background read-only migration of ~/.omo/agent/models.json. */
+/** Kept for call-site compatibility; there is no longer a file to migrate. */
 export function migrateConfigBackground(): void {
-  void readMigrationSource().catch((error: unknown) => {
-    console.error("[omo-cpa] config migration background error:", redact((error as Error).message));
-  });
+  // The plugin reads no omo-owned configuration, so there is nothing to do.
 }
 
 export async function login(callbacks: LoginCallbacks): Promise<Credentials> {

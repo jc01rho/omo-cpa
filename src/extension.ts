@@ -5,8 +5,8 @@
  * workhorses and `local-proxy-last` for explicit last-resort routing. The latter
  * opts out of senpi's implicit family expansion. Both refresh from the same
  * three-format catalog; `/login local-proxy` remains available through oauth.
- * `models.json` is only read as a migration source for the existing key and
- * curated limits. This extension never writes omo-owned configuration files.
+ * The plugin is self-contained: it neither reads nor writes omo's own
+ * configuration, and the inference key arrives through `/login`.
  *
  * The existing `/cpa` report, health circuit breaker, secret redaction, and
  * fail-open handlers are preserved. Declared overrides only enrich models that
@@ -42,14 +42,13 @@ import {
   setOverride,
   toOverrideMap,
 } from "./tier.ts";
-import { loadConfig, scanOmoConfigRefs } from "./config.ts";
-import { getCatalog } from "./catalog.ts";
-import { computeDrift } from "./drift.ts";
+import { loadConfig } from "./config.ts";
 import { HealthTracker } from "./health.ts";
 import { fetchUsage } from "./usage.ts";
 import { renderReport, renderStatusLine } from "./render.ts";
+import type { TierCounts } from "./render.ts";
 import { redact } from "./redact.ts";
-import type { ConfigRef, CpaConfig, DriftReport } from "./types.ts";
+import type { CpaConfig } from "./types.ts";
 
 const STATUS_KEY = "omo-cpa";
 
@@ -58,13 +57,10 @@ interface State {
   apiKey: string | null;
   managementKey: string | null;
   configReason: string | null;
-  drift: DriftReport | null;
-  driftReason: string | null;
-  refs: ConfigRef[];
-  deadIds: Set<string>;
+  tiers: TierCounts | null;
+  tierReason: string | null;
   health: HealthTracker;
   lastRequestWasCpa: boolean;
-  substitutionEnabled: boolean;
 }
 
 export interface OmoCpaOptions {
@@ -75,10 +71,9 @@ export interface OmoCpaOptions {
 export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
   const state: State = {
     config: null, apiKey: null, managementKey: null, configReason: null,
-    drift: null, driftReason: null, refs: [], deadIds: new Set(),
+    tiers: null, tierReason: null,
     health: new HealthTracker(),
     lastRequestWasCpa: false,
-    substitutionEnabled: process.env["OMO_CPA_SUBSTITUTE"] === "1",
   };
 
   /** Register the in-code CPA provider + oauth + /cpa command.
@@ -91,8 +86,6 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
     } catch {
       // If registerProvider itself throws synchronously, swallow it.
     }
-    // Background migration: read models.json read-only to cache existing key
-    // and curated per-model values. Never writes to models.json.
     migrateConfigBackground();
   }
 
@@ -102,45 +95,30 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
   // has bound its context. After that it takes effect immediately."
   registerProviderSafely();
 
-  /** Load config + catalog and recompute drift. Never throws. */
-  async function refresh(force = false): Promise<void> {
+  /** Load the live catalog and recompute tier sizes. Never throws. */
+  async function refresh(): Promise<void> {
     try {
-      const loaded = await loadConfig();
+      const loaded = loadConfig();
       state.config = loaded.config;
       state.apiKey = loaded.apiKey;
       state.managementKey = loaded.managementKey;
       state.configReason = loaded.reason;
-      if (!loaded.config || !loaded.apiKey) {
-        state.driftReason = loaded.reason ?? "추론 키를 찾을 수 없음";
-        return;
-      }
 
-      const catalog = await getCatalog(loaded.config.root, loaded.apiKey, { force });
-      const models = catalog.models;
-      if (!models) {
-        state.drift = null;
-        state.driftReason = catalog.ok ? "모델 목록 없음" : catalog.reason;
-        return;
-      }
-      if (!catalog.ok) state.driftReason = catalog.reason;
-      else state.driftReason = null;
-
-      const declared = loaded.config.providers.flatMap((p) =>
-        p.declared.map((id) => ({ provider: p.name, id })),
-      );
-      state.drift = computeDrift(declared, models);
-      state.deadIds = new Set(state.drift.dead.map((d) => d.id));
-
-      const scan = await scanOmoConfigRefs();
-      state.refs = scan.refs;
+      const { report } = await loadTieredProviderData();
+      state.tiers = {
+        primary: report.primary.length,
+        last: report.last.length,
+        chatUnfit: report.chatUnfit.length,
+      };
+      state.tierReason = null;
     } catch (e) {
-      state.driftReason = `점검 실패: ${redact((e as Error).message)}`;
+      state.tierReason = `점검 실패: ${redact((e as Error).message)}`;
     }
   }
 
   function setStatus(ctx: any): void {
     try {
-      ctx?.ui?.setStatus?.(STATUS_KEY, renderStatusLine(state.drift, state.health.snapshot()));
+      ctx?.ui?.setStatus?.(STATUS_KEY, renderStatusLine(state.tiers, state.health.snapshot()));
     } catch { /* status is cosmetic */ }
   }
 
@@ -155,29 +133,16 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
     void (async () => {
       await refresh();
       setStatus(ctx);
-      const dead = state.drift?.dead ?? [];
-      if (dead.length > 0) {
-        const names = dead.map((d) => d.id).join(", ");
-        const inChains = state.refs.filter((r) => state.deadIds.has(r.id)).length;
-        notify(
-          ctx,
-          `CPA에 없는 모델 ${dead.length}종: ${names}` +
-            (inChains > 0 ? ` · omo.jsonc ${inChains}곳에서 참조 중 — /cpa 로 확인` : " — /cpa 로 확인"),
-          "warning",
-        );
-      } else if (state.driftReason) {
-        notify(ctx, `CPA 모델 점검 불가 · ${state.driftReason}`, "info");
+      // The tier split is derived from the live catalog, so a model omo declares
+      // elsewhere is not this plugin's business: no drift warning is emitted.
+      if (!state.tiers && state.tierReason) {
+        notify(ctx, `CPA 모델 목록 불러오기 실패 · ${state.tierReason}`, "info");
       }
     })();
   });
 
-  pi.on("model_select", (event: any, ctx: any) => {
+  pi.on("model_select", (_event: any, ctx: any) => {
     try {
-      const id = event?.model?.id;
-      if (typeof id === "string" && state.deadIds.has(id)) {
-        // model_select cannot replace the model; warn and let the wire hook act.
-        notify(ctx, `${id} 는 CPA에 없는 모델입니다 — 요청이 실패할 수 있습니다 (/cpa)`, "warning");
-      }
       setStatus(ctx);
     } catch { /* fail open */ }
     return undefined;
@@ -187,22 +152,8 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
     try {
       const provider = event?.model?.provider;
       state.lastRequestWasCpa = typeof provider === "string" && provider.startsWith("local-proxy");
-
-      if (!state.substitutionEnabled || !state.lastRequestWasCpa) return undefined;
-
-      const payload = event?.payload;
-      if (!payload || typeof payload !== "object") return undefined;
-      const wireModel = (payload as { model?: unknown }).model;
-      if (typeof wireModel !== "string" || !state.deadIds.has(wireModel)) return undefined;
-
-      const sub = state.drift?.dead.find((d) => d.id === wireModel)?.substitute;
-      if (!sub) return undefined;
-
-      // Returning a value replaces the payload for this request only.
-      return { ...(payload as Record<string, unknown>), model: sub.id };
-    } catch {
-      return undefined;
-    }
+    } catch { /* fail open */ }
+    return undefined;
   });
 
   pi.on("after_provider_response", (event: any, ctx: any) => {
@@ -329,8 +280,7 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
           return;
         }
 
-        const force = args.trim() === "refresh";
-        if (force || !state.config) await refresh(force);
+        if (args.trim() === "refresh" || !state.config) await refresh();
 
         if (!state.config) {
           notify(ctx, `CPA 설정을 찾을 수 없음 · ${state.configReason ?? "이유 불명"}`, "error");
@@ -340,12 +290,10 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
         const usage = await fetchUsage(state.config.root, state.managementKey);
         const report = renderReport({
           config: state.config,
-          drift: state.drift,
-          driftReason: state.driftReason,
+          tiers: state.tiers,
+          tierReason: state.tierReason,
           health: state.health.snapshot(),
           usage,
-          refs: state.refs,
-          substitutionEnabled: state.substitutionEnabled,
         });
 
         sendBlock(report, "omo-cpa-report");
