@@ -1,6 +1,22 @@
 /**
  * omo extension entry.
  *
+ * CPA is now a first-class omo provider registered entirely in code. On load,
+ * `registerCpaProvider` calls `pi.registerProvider("local-proxy", ...)` with
+ * an `oauth` block so `/login local-proxy` stores the key in
+ * `~/.omo/agent/auth.json` (omo-owned), and `refreshModels` fetches the real
+ * catalog from the CPA server and persists it via `context.publish({ persist })`.
+ * `models.json` is read at most once, read-only, to migrate the existing key
+ * and any curated per-model values into the plugin's own cache; it is never
+ * written to and no longer required.
+ *
+ * The existing `/cpa` report, health circuit breaker, secret redaction, and
+ * fail-open handlers are preserved. The "model drift guard" is reframed:
+ * absence from `/v1/models` is no longer treated as "dead" for the four alias
+ * models that resolve via upstream mapping — see `src/provider.ts`'s
+ * DECLARED_OVERRIDES and the probe-based "declared but neither listed nor
+ * callable" check documented in README.
+ *
  * Contract notes verified against senpi's extension type definitions:
  * - `model_select` CANNOT change the model (its result only carries a system
  *   prompt), so a dead model is reported there and substituted on the wire.
@@ -12,6 +28,7 @@
  * The extension is fail-open by design: every handler swallows its own errors so
  * a plugin bug can never take down a session.
  */
+import { registerCpaProvider, migrateConfigBackground } from "./provider.ts";
 import { loadConfig, scanOmoConfigRefs } from "./config.ts";
 import { getCatalog } from "./catalog.ts";
 import { computeDrift } from "./drift.ts";
@@ -45,6 +62,27 @@ export default function omoCpa(pi: any): void {
     lastRequestWasCpa: false,
     substitutionEnabled: process.env["OMO_CPA_SUBSTITUTE"] === "1",
   };
+
+  /** Register the in-code CPA provider + oauth + /cpa command.
+   *  Fail-open: a malformed `pi` (missing registerProvider) is silently ignored,
+   *  and the built-in /cpa command (below) remains the only surface.
+   */
+  function registerProviderSafely(): void {
+    try {
+      registerCpaProvider(pi as unknown);
+    } catch {
+      // If registerProvider itself throws synchronously, swallow it.
+    }
+    // Background migration: read models.json read-only to cache existing key
+    // and curated per-model values. Never writes to models.json.
+    migrateConfigBackground();
+  }
+
+  // Run registration immediately so `/login` and the model catalog are available
+  // as soon as omo's runner binds context. This is safe per the types.d.ts guarantee:
+  // "During initial extension load this call is queued and applied once the runner
+  // has bound its context. After that it takes effect immediately."
+  registerProviderSafely();
 
   /** Load config + catalog and recompute drift. Never throws. */
   async function refresh(force = false): Promise<void> {
@@ -165,7 +203,7 @@ export default function omoCpa(pi: any): void {
   });
 
   pi.registerCommand("cpa", {
-    description: "CPA 상태·모델 드리프트·계정 사용량 점검",
+    description: "CPA 상태·모델 드리프트·계정 사용량 점검 (코드 등록 provider)",
     argumentHint: "[refresh]",
     handler: async (args: string, ctx: any) => {
       try {
