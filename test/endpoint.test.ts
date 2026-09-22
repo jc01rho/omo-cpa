@@ -4,6 +4,7 @@ import {
   mergeCatalogs,
   normalizeAnthropicId,
   normalizeGeminiId,
+  normalizeOpenAIId,
   selectEndpoint,
 } from "../src/endpoint.ts";
 import type { CatalogModel } from "../src/tier-types.ts";
@@ -30,6 +31,10 @@ function json(body: unknown, status = 200): Response {
 }
 
 describe("id normalization", () => {
+  test("keeps the OpenAI catalog id unchanged", () => {
+    expect(normalizeOpenAIId("openai/gpt-5")).toBe("openai/gpt-5");
+  });
+
   test("strips only Gemini's leading models/ prefix", () => {
     expect(normalizeGeminiId("models/google/gemini-2.5-pro")).toBe("google/gemini-2.5-pro");
     expect(normalizeGeminiId("gemini-2.5-pro")).toBe("gemini-2.5-pro");

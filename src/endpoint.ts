@@ -46,6 +46,11 @@ export interface FetchCatalogOptions {
   timeoutMs?: number;
 }
 
+/** OpenAI already exposes the canonical catalog id. */
+export function normalizeOpenAIId(id: string): string {
+  return id;
+}
+
 /** Normalize a model name from Gemini's `models/<id>` list representation. */
 export function normalizeGeminiId(id: string): string {
   return id.startsWith("models/") ? id.slice("models/".length) : id;
@@ -76,8 +81,10 @@ export function mergeCatalogs(
   const byId = new Map<string, CatalogModel>();
 
   for (const record of recordsAt(openaiResponse, "data")) {
-    const id = stringAt(record, "id");
-    if (!id || byId.has(id)) continue;
+    const rawId = stringAt(record, "id");
+    if (!rawId) continue;
+    const id = normalizeOpenAIId(rawId);
+    if (byId.has(id)) continue;
     const model: CatalogModel = {
       id,
       ownedBy: stringAt(record, "owned_by"),
