@@ -1,95 +1,90 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
-import type { CatalogResult } from "./types.ts";
+/**
+ * Shared catalog cache.
+ *
+ * Two providers are registered (primary and last-resort) and each one owns a
+ * `refreshModels`, while `/cpa` can ask for the catalog too. Every uncached
+ * call fans out to three list endpoints, so without this layer one refresh
+ * round produced six or more `/v1/models` requests against the CPA server.
+ *
+ * The cache is process-wide and does two things:
+ *  - serves a result younger than the TTL without touching the network
+ *  - collapses concurrent callers onto one in-flight request
+ *
+ * Only a successful fetch is cached; a failure must stay retryable.
+ */
+import { fetchCatalog as fetchCatalogUncached } from "./endpoint.ts";
+import type { CatalogFetchResult, FetchCatalogOptions } from "./endpoint.ts";
 
-const CACHE_DIR = join(homedir(), ".cache", "omo-cpa");
-const CACHE_FILE = join(CACHE_DIR, "catalog.json");
+/** A model list does not churn minute to minute. */
+export const DEFAULT_TTL_MS = 5 * 60 * 1000;
 
-/** Default freshness window. A model list does not churn minute to minute. */
-export const DEFAULT_TTL_MS = 10 * 60 * 1000;
-
-interface CacheShape {
-  models: string[];
+interface CacheEntry {
+  result: CatalogFetchResult;
   fetchedAt: number;
-  root: string;
 }
 
-/** Fetch the model list the CPA server actually serves right now. */
-export async function fetchCatalog(
-  root: string,
-  apiKey: string,
-  timeoutMs = 8000,
-): Promise<CatalogResult> {
-  try {
-    const res = await fetch(`${root}/v1/models`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!res.ok) {
-      return { ok: false, reason: `모델 목록 조회 실패 (HTTP ${res.status})`, models: null, fetchedAt: null };
-    }
-    const body = (await res.json()) as { data?: unknown };
-    if (!Array.isArray(body?.data)) {
-      // Do not invent a catalog from an unparseable response.
-      return { ok: false, reason: "모델 목록 응답을 해석할 수 없음 (data 배열 없음)", models: null, fetchedAt: null };
-    }
-    const models = body.data
-      .map((m) => (m && typeof m === "object" ? (m as { id?: unknown }).id : null))
-      .filter((id): id is string => typeof id === "string");
-    if (models.length === 0) {
-      return { ok: false, reason: "모델 목록이 비어 있음", models: null, fetchedAt: null };
-    }
-    return { ok: true, models, fetchedAt: Date.now(), source: "network" };
-  } catch (e) {
-    const err = e as Error;
-    const reason = err.name === "TimeoutError" || err.name === "AbortError"
-      ? `모델 목록 조회 시간 초과 (${timeoutMs}ms)`
-      : `모델 목록 조회 오류: ${err.message}`;
-    return { ok: false, reason, models: null, fetchedAt: null };
-  }
+let cached: (CacheEntry & { key: string }) | null = null;
+let inFlight: { key: string; token: symbol; promise: Promise<CatalogFetchResult> } | null = null;
+
+function ttl(): number {
+  const raw = process.env["OMO_CPA_CATALOG_TTL_MS"];
+  if (raw === undefined) return DEFAULT_TTL_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_TTL_MS;
 }
 
-export async function readCache(root: string, ttlMs = DEFAULT_TTL_MS): Promise<CacheShape | null> {
-  try {
-    const c = (await Bun.file(CACHE_FILE).json()) as CacheShape;
-    if (c.root !== root) return null;
-    if (!Array.isArray(c.models) || typeof c.fetchedAt !== "number") return null;
-    if (Date.now() - c.fetchedAt > ttlMs) return null;
-    return c;
-  } catch {
-    return null;
-  }
+/** Distinct servers and credentials must never share a cached catalog. */
+function cacheKey(root: string, apiKey: string): string {
+  return `${root}\u0000${apiKey}`;
 }
 
-export async function writeCache(root: string, models: string[]): Promise<void> {
-  try {
-    await Bun.write(CACHE_FILE, JSON.stringify({ root, models, fetchedAt: Date.now() } satisfies CacheShape));
-  } catch {
-    // A cache write failure must never affect a session.
-  }
+export interface CachedCatalogOptions extends FetchCatalogOptions {
+  /** Bypass the cached copy and refetch. Still collapses concurrent callers. */
+  force?: boolean;
 }
 
-/** Cache-first catalog read. Falls back to a stale cache with an explicit reason. */
+/** Age of the cached catalog in ms, or null when nothing is cached. */
+export function cachedCatalogAge(now = Date.now()): number | null {
+  return cached ? now - cached.fetchedAt : null;
+}
+
+/** Drop the cached catalog. Used by tests and by an explicit refresh. */
+export function clearCatalogCache(): void {
+  cached = null;
+  inFlight = null;
+}
+
+/**
+ * Fetch the merged catalog, reusing a recent result and joining an in-flight
+ * request when one is already running for the same server and key.
+ */
 export async function getCatalog(
   root: string,
   apiKey: string,
-  opts: { ttlMs?: number; timeoutMs?: number; force?: boolean } = {},
-): Promise<CatalogResult> {
-  const ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
-  if (!opts.force) {
-    const cached = await readCache(root, ttlMs);
-    if (cached) return { ok: true, models: cached.models, fetchedAt: cached.fetchedAt, source: "cache" };
+  options: CachedCatalogOptions = {},
+): Promise<CatalogFetchResult> {
+  const { force = false, ...fetchOptions } = options;
+  const key = cacheKey(root, apiKey);
+  const now = Date.now();
+
+  if (!force && cached && cached.key === key && now - cached.fetchedAt < ttl()) {
+    return cached.result;
   }
-  const fresh = await fetchCatalog(root, apiKey, opts.timeoutMs);
-  if (fresh.ok) {
-    await writeCache(root, fresh.models);
-    return fresh;
-  }
-  // Network failed: surface a stale cache, but say so instead of pretending.
-  const stale = await readCache(root, Number.POSITIVE_INFINITY);
-  if (stale) {
-    const ageMin = Math.round((Date.now() - stale.fetchedAt) / 60000);
-    return { ok: false, reason: `${fresh.reason} · ${ageMin}분 전 캐시 사용`, models: stale.models, fetchedAt: stale.fetchedAt };
-  }
-  return fresh;
+  if (inFlight && inFlight.key === key) return inFlight.promise;
+
+  const token = Symbol("catalog-fetch");
+  const promise = (async () => {
+    try {
+      const result = await fetchCatalogUncached(root, apiKey, fetchOptions);
+      // A failure stays uncached so the next caller can retry immediately.
+      if (result.ok) cached = { key, result, fetchedAt: Date.now() };
+      return result;
+    } finally {
+      // Only clear the slot this call owns, so a newer fetch is not orphaned.
+      if (inFlight?.token === token) inFlight = null;
+    }
+  })();
+
+  inFlight = { key, token, promise };
+  return promise;
 }

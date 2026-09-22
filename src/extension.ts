@@ -65,7 +65,7 @@ interface State {
 
 export interface OmoCpaOptions {
   overridePath?: string;
-  loadProviderData?: () => Promise<ProviderData>;
+  loadProviderData?: (force?: boolean) => Promise<ProviderData>;
 }
 
 export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
@@ -96,7 +96,7 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
   registerProviderSafely();
 
   /** Load the live catalog and recompute tier sizes. Never throws. */
-  async function refresh(): Promise<void> {
+  async function refresh(force = false): Promise<void> {
     try {
       const loaded = loadConfig();
       state.config = loaded.config;
@@ -104,7 +104,7 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
       state.managementKey = loaded.managementKey;
       state.configReason = loaded.reason;
 
-      const { report } = await loadTieredProviderData();
+      const { report } = await loadTieredProviderData(force);
       state.tiers = {
         primary: report.primary.length,
         last: report.last.length,
@@ -172,11 +172,12 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
   });
 
   const overridePath = options.overridePath ?? OVERRIDES_FILE;
-  const providerDataLoader = options.loadProviderData ?? loadProviderData;
+  const providerDataLoader = options.loadProviderData
+    ?? ((force?: boolean) => loadProviderData(force ? { force: true } : {}));
 
-  async function loadTieredProviderData(): Promise<TieredProviderData> {
+  async function loadTieredProviderData(force = false): Promise<TieredProviderData> {
     const [data, store] = await Promise.all([
-      providerDataLoader(),
+      providerDataLoader(force),
       loadOverrideStore(overridePath),
     ]);
     return buildProviderRegistration({ ...data, overrides: toOverrideMap(store) });
@@ -280,7 +281,8 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
           return;
         }
 
-        if (args.trim() === "refresh" || !state.config) await refresh();
+        const force = args.trim() === "refresh";
+        if (force || !state.config) await refresh(force);
 
         if (!state.config) {
           notify(ctx, `CPA 설정을 찾을 수 없음 · ${state.configReason ?? "이유 불명"}`, "error");

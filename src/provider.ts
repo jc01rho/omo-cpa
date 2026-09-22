@@ -1,5 +1,6 @@
 /** CPA provider registration and catalog-to-runtime model conversion. */
-import { fetchCatalog, selectEndpoint } from "./endpoint.ts";
+import { selectEndpoint } from "./endpoint.ts";
+import { getCatalog } from "./catalog.ts";
 import { loadConfig } from "./config.ts";
 import { redact } from "./redact.ts";
 import { buildTierReport, loadOverrideStore, toOverrideMap } from "./tier.ts";
@@ -230,7 +231,9 @@ function makeRefreshModels(tier: Tier): (context: RefreshModelsContext) => Promi
       await publishBestEffort(context, { kind: "catalog-empty", tier, reason: "추론 키 없음" });
       return [];
     }
-    const fetched = await fetchCatalog(DEFAULT_BASE_URL, apiKey, { timeoutMs: 15_000 });
+    // Both providers refresh independently; the shared cache keeps that from
+    // multiplying into a second fan-out of list requests.
+    const fetched = await getCatalog(DEFAULT_BASE_URL, apiKey, { timeoutMs: 15_000 });
     if (!fetched.ok) {
       await publishBestEffort(context, { kind: "catalog-empty", tier, reason: fetched.reason });
       return [];
@@ -266,13 +269,15 @@ export async function loadProviderData(options: {
   apiKey?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  force?: boolean;
 } = {}): Promise<ProviderData> {
   const migration = readMigrationSource();
   const apiKey = options.apiKey ?? migration.apiKey;
   if (!apiKey) throw new Error("CPA 추론 키가 없습니다. /login local-proxy 또는 OMO_CPA_API_KEY를 설정하세요");
-  const result = await fetchCatalog(DEFAULT_BASE_URL, apiKey, {
+  const result = await getCatalog(DEFAULT_BASE_URL, apiKey, {
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.force ? { force: true } : {}),
   });
   if (!result.ok) throw new Error(result.reason);
   return { catalog: result.models, contextOverrides: migration.contextOverrides };

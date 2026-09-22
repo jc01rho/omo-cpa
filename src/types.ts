@@ -19,10 +19,6 @@ export interface CpaConfig {
   hasManagementKey: boolean;
 }
 
-export type CatalogResult =
-  | { ok: true; models: string[]; fetchedAt: number; source: "network" | "cache" }
-  | { ok: false; reason: string; models: string[] | null; fetchedAt: number | null };
-
 export type HealthState = "ok" | "degraded" | "down" | "rate_limited" | "unknown";
 
 export interface HealthSnapshot {
