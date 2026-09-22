@@ -1,28 +1,19 @@
 #!/usr/bin/env bun
 /** Live CPA tier proof. Reads the existing key but never prints it. */
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { validateFallbackChains } from "/home/whrho/.nvm/versions/node/v24.14.0/lib/node_modules/omo-ai/node_modules/@code-yeongyu/senpi/dist/core/retry-fallback/validate.js";
 import { generateFallbackChains } from "../src/chain.ts";
 import type { FallbackChain } from "../src/chain.ts";
 import { fetchCatalog, selectEndpoint } from "../src/endpoint.ts";
-import { LAST_RESORT_PROVIDER_NAME, PROVIDER_NAME } from "../src/provider.ts";
-import { buildTierReport, loadOverrideStore, toOverrideMap } from "../src/tier.ts";
+import {
+  buildProviderRegistration,
+  LAST_RESORT_PROVIDER_NAME,
+  PROVIDER_NAME,
+  readMigrationSource,
+} from "../src/provider.ts";
+import { loadOverrideStore, toOverrideMap } from "../src/tier.ts";
 import type { CatalogModel, TierDecision } from "../src/tier-types.ts";
 
 const ROOT = "http://152.69.234.237:8317";
-const MODELS_JSON = join(homedir(), ".omo", "agent", "models.json");
-
-async function inferenceKey(): Promise<string> {
-  const parsed = await Bun.file(MODELS_JSON).json() as {
-    providers?: Record<string, { apiKey?: unknown }>;
-  };
-  const key = parsed.providers?.[PROVIDER_NAME]?.apiKey;
-  if (typeof key !== "string" || key.length === 0) {
-    throw new Error(`missing providers[${JSON.stringify(PROVIDER_NAME)}].apiKey in ${MODELS_JSON}`);
-  }
-  return key;
-}
 
 function registryFor(catalog: CatalogModel[], decisions: TierDecision[]) {
   const tiers = new Map(decisions.map(({ id, tier }) => [id, tier]));
@@ -42,17 +33,23 @@ function chainSettings(chains: FallbackChain[]): Record<string, string[]> {
 }
 
 async function main(): Promise<void> {
-  const key = await inferenceKey();
-  const result = await fetchCatalog(ROOT, key, { timeoutMs: 20_000 });
+  const migration = await readMigrationSource();
+  if (!migration.apiKey) throw new Error("missing local-proxy inference key");
+  const result = await fetchCatalog(ROOT, migration.apiKey, { timeoutMs: 20_000 });
   if (!result.ok) throw new Error(result.reason);
 
   const store = await loadOverrideStore();
-  const report = buildTierReport(result.models, toOverrideMap(store));
+  const tiered = buildProviderRegistration({
+    catalog: result.models,
+    contextOverrides: migration.contextOverrides,
+    overrides: toOverrideMap(store),
+  });
+  const report = tiered.report;
   const routable = [...report.primary, ...report.last];
   const providers = { primary: PROVIDER_NAME, last: LAST_RESORT_PROVIDER_NAME } as const;
   const targets = report.primary.slice(0, 3).map(({ id }) => id);
   const chains = generateFallbackChains({
-    catalog: result.models,
+    catalog: tiered.catalog,
     decisions: routable,
     providers,
     targets,
@@ -80,13 +77,13 @@ async function main(): Promise<void> {
 
   const warnings = validateFallbackChains(
     chainSettings(chains),
-    registryFor(result.models, routable),
+    registryFor(tiered.catalog, routable),
   );
   const sample = chains[0];
   const boundary = sample?.entries.findIndex((entry) => entry.startsWith(`${LAST_RESORT_PROVIDER_NAME}/`)) ?? -1;
 
   console.log("=== LIVE CPA TIER VERIFICATION ===");
-  console.log(`catalog: ${result.models.length}`);
+  console.log(`catalog: ${result.models.length} live + ${tiered.catalog.length - result.models.length} declared aliases`);
   console.log(`tiers: primary=${report.primary.length} last=${report.last.length} chatUnfit=${report.chatUnfit.length}`);
   console.log(`endpoints: openai=${distribution.openai} anthropic=${distribution.anthropic} gemini=${distribution.gemini}`);
   console.log(`optional endpoint failures: ${JSON.stringify(result.failures)}`);
