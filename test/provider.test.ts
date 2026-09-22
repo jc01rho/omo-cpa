@@ -28,6 +28,7 @@ import {
   refreshToken,
   login,
   LAST_RESORT_PROVIDER_NAME,
+  STABLE_LAST_RESORT_IDS,
   registerCpaProvider,
   buildProviderRegistration,
   readStoredPrimaryCredential,
@@ -431,6 +432,32 @@ describe("declared alias tier follows upstream identity, not the alias id", () =
       expect(catalog.has(id)).toBe(true);
       expect(primary.has(id)).toBe(false);
       expect(last.has(id)).toBe(true);
+    }
+  });
+
+  test("stable real last-resort ids stay registered when the volatile catalog omits them", () => {
+    const tiered = buildProviderRegistration({
+      catalog: [aliasCatalog("gpt-5.6-sol")],
+      contextOverrides: new Map(),
+      overrides: {},
+    });
+    const primary = new Set(tiered.primaryModels.map((model) => model.id));
+    const last = new Set(tiered.lastModels.map((model) => model.id));
+    for (const id of STABLE_LAST_RESORT_IDS) {
+      expect(primary.has(id)).toBe(false);
+      expect(last.has(id)).toBe(true);
+      const model = tiered.lastModels.find((candidate) => candidate.id === id);
+      expect(model?.reasoning).toBe(true);
+      expect(model?.input).toEqual(["text", "image"]);
+      expect(model?.contextWindow).toBe(196_608);
+      expect(model?.maxTokens).toBe(65_536);
+      expect(model?.thinkingLevelMap).toEqual({
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: "xhigh",
+        max: null,
+      });
     }
   });
 });

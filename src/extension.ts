@@ -32,6 +32,7 @@ import {
   PROVIDER_NAME,
   readStoredPrimaryConnection,
   registerCpaProvider,
+  STABLE_LAST_RESORT_IDS,
 } from "./provider.ts";
 import type { ProviderData, TieredProviderData } from "./provider.ts";
 import { generateFallbackChains } from "./chain.ts";
@@ -245,9 +246,14 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
       return;
     }
     const tiered = await loadTieredProviderData();
+    const stableIds = new Set<string>(STABLE_LAST_RESORT_IDS);
+    const stableLast = tiered.report.last.filter(({ id }) => stableIds.has(id));
     const chains = generateFallbackChains({
       catalog: tiered.catalog,
-      decisions: [...tiered.report.primary, ...tiered.report.last],
+      decisions: [
+        ...tiered.report.primary,
+        ...(stableLast.length > 0 ? stableLast : tiered.report.last),
+      ],
       providers: { primary: PROVIDER_NAME, last: LAST_RESORT_PROVIDER_NAME },
       targets: tiered.report.primary.map(({ id }) => id),
     });

@@ -25,7 +25,7 @@ export interface ProviderModel {
   api?: string;
   baseUrl?: string;
   upstreamModelId?: string;
-  thinkingLevelMap?: Record<string, string>;
+  thinkingLevelMap?: Record<string, string | null>;
 }
 
 export interface ProviderConfig {
@@ -112,6 +112,16 @@ export const PROVIDER_NAME = "cliproxyapi";
 export const LAST_RESORT_PROVIDER_NAME = "cliproxyapi-last";
 export { DEFAULT_BASE_URL };
 
+/**
+ * Stable, real CPA models used as the persisted last-resort chain tail.
+ * They are synthesized when a volatile catalog temporarily omits them so
+ * startup validation never sees an unknown selector.
+ */
+export const STABLE_LAST_RESORT_IDS = [
+  "higher-coding",
+  "lower-coding",
+] as const;
+
 const DECLARED_OVERRIDES: Readonly<Record<string, {
   contextWindow: number;
   maxTokens: number;
@@ -163,6 +173,19 @@ function appendDeclaredAliases(catalog: readonly CatalogModel[]): CatalogModel[]
       inputModalities: declared.input.map((item) => item.toUpperCase()),
       outputModalities: null,
       thinking: null,
+    });
+  }
+  for (const id of STABLE_LAST_RESORT_IDS) {
+    if (present.has(id)) continue;
+    models.push({
+      id,
+      ownedBy: null,
+      displayName: id,
+      contextLength: 196_608,
+      maxTokens: 65_536,
+      inputModalities: ["TEXT", "IMAGE"],
+      outputModalities: ["TEXT"],
+      thinking: true,
     });
   }
   return models;
@@ -336,9 +359,13 @@ function toProviderModel(
   baseUrl: string,
 ): ProviderModel {
   const declared = DECLARED_OVERRIDES[model.id];
+  const stableLast = STABLE_LAST_RESORT_IDS.includes(model.id as typeof STABLE_LAST_RESORT_IDS[number]);
   const curated = contextOverrides.get(model.id);
   let contextWindow: number;
-  if (model.contextLength && curated?.contextWindow) {
+  if (stableLast) {
+    contextWindow = 196_608;
+    stats.realContext++;
+  } else if (model.contextLength && curated?.contextWindow) {
     contextWindow = Math.min(model.contextLength, curated.contextWindow);
     if (contextWindow !== model.contextLength || contextWindow !== curated.contextWindow) stats.overruledContext++;
     stats.realContext++;
@@ -357,14 +384,14 @@ function toProviderModel(
   }
   contextWindow = Math.min(contextWindow, 2_000_000);
 
-  const reportedMax = curated?.maxTokens || model.maxTokens || declared?.maxTokens || 0;
+  const reportedMax = stableLast ? 65_536 : curated?.maxTokens || model.maxTokens || declared?.maxTokens || 0;
   let maxTokens = reportedMax > 0
     ? Math.min(reportedMax, contextWindow - 1, MAX_TOKENS_CEIL)
     : contextWindow <= DEFAULT_CONTEXT_WINDOW ? DEFAULT_MAX_TOKENS_FOR_DEFAULT_CONTEXT : DEFAULT_MAX_TOKENS;
   if (maxTokens < reportedMax) stats.clampedMaxTokens++;
   if (maxTokens <= 0) maxTokens = 1;
 
-  const input = inputModalities(model.inputModalities, declared?.input);
+  const input = stableLast ? ["text", "image"] as const : inputModalities(model.inputModalities, declared?.input);
   if (model.inputModalities) stats.inputFromGemini++;
   else stats.inputFromDefault++;
 
@@ -376,8 +403,8 @@ function toProviderModel(
   return {
     id: model.id,
     name: (declared?.name || model.displayName?.replace(/^\*/, "") || model.id),
-    reasoning: model.thinking ?? !!declared,
-    input,
+    reasoning: stableLast || model.thinking === true || !!declared,
+    input: [...input],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
     maxTokens,
@@ -387,6 +414,12 @@ function toProviderModel(
     thinkingLevelMap: model.id.startsWith("gpt-5.6") ? {
       off: "none", minimal: "minimal", low: "low", medium: "medium",
       high: "high", xhigh: "xhigh", max: "max",
+    } : STABLE_LAST_RESORT_IDS.includes(model.id as typeof STABLE_LAST_RESORT_IDS[number]) ? {
+      low: "low",
+      medium: "medium",
+      high: "high",
+      xhigh: "xhigh",
+      max: null,
     } : undefined,
   };
 }

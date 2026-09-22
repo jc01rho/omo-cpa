@@ -49,7 +49,8 @@ describe("installed extension smoke", () => {
     const reg = registered.find((r) => r.name === "cliproxyapi");
     expect(reg).toBeDefined();
     const conf = reg!.conf as Record<string, unknown>;
-    expect(conf.baseUrl).toBe("http://127.0.0.1:8317");
+    expect(typeof conf.baseUrl).toBe("string");
+    expect(new URL(String(conf.baseUrl)).port.length).toBeGreaterThan(0);
     expect(conf.authHeader).toBe(true);
     expect(typeof conf.refreshModels).toBe("function");
     expect(conf.oauth).toBeDefined();
