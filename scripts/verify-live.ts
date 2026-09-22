@@ -1,75 +1,108 @@
 #!/usr/bin/env bun
-/**
- * One-off live verification: prove unmangleAnthropicId + the merged catalog
- * against the real CPA server. Prints redacted counts only (never keys).
- */
-import { unmangleAnthropicId } from "../src/provider-core.ts";
+/** Live CPA tier proof. Reads the existing key but never prints it. */
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { validateFallbackChains } from "/home/whrho/.nvm/versions/node/v24.14.0/lib/node_modules/omo-ai/node_modules/@code-yeongyu/senpi/dist/core/retry-fallback/validate.js";
+import { generateFallbackChains } from "../src/chain.ts";
+import type { FallbackChain } from "../src/chain.ts";
+import { fetchCatalog, selectEndpoint } from "../src/endpoint.ts";
+import { LAST_RESORT_PROVIDER_NAME, PROVIDER_NAME } from "../src/provider.ts";
+import { buildTierReport, loadOverrideStore, toOverrideMap } from "../src/tier.ts";
+import type { CatalogModel, TierDecision } from "../src/tier-types.ts";
 
-const KEY = process.env.OMO_CPA_API_KEY;
 const ROOT = "http://152.69.234.237:8317";
+const MODELS_JSON = join(homedir(), ".omo", "agent", "models.json");
 
-async function main(): Promise<void> {
-  if (!KEY) { console.error("Set OMO_CPA_API_KEY to a senpi- inference key"); process.exit(2); }
-  const headers = { Authorization: `Bearer ${KEY}` };
-  const oRes = await fetch(`${ROOT}/v1/models`, { headers });
-  if (!oRes.ok) throw new Error(`openai: ${oRes.status}`);
-  const o = await oRes.json() as { data: Array<{ id: string }> };
-  const O = new Set(o.data.map((m) => m.id));
-
-  const aRes = await fetch(`${ROOT}/v1/models`, {
-    headers: { ...headers, "anthropic-version": "2023-06-01" },
-  });
-  if (!aRes.ok) throw new Error(`anthropic: ${aRes.status}`);
-  const a = await aRes.json() as { data: Array<{ id: string; context_length?: number }> };
-  const A = a.data.map((m) => m.id);
-  const withCtx = a.data.filter((m) => (m.context_length ?? 0) > 0).length;
-
-  const gRes = await fetch(`${ROOT}/v1beta/models`, { headers });
-  if (!gRes.ok) throw new Error(`gemini: ${gRes.status}`);
-  const g = await gRes.json() as { models: Array<{ name: string }> };
-  const G = new Set(g.models.map((m) => m.name.replace(/^models\//, "")));
-
-  // Unmangle check
-  let matched = 0;
-  let unmatched = 0;
-  const examples: Array<[string, string]> = [];
-  for (const raw of A) {
-    const u = unmangleAnthropicId(raw);
-    if (u.transformed && O.has(u.unmangled)) {
-      matched++;
-      if (examples.length < 5) examples.push([raw, u.unmangled]);
-    } else if (u.transformed) {
-      unmatched++;
-    }
+async function inferenceKey(): Promise<string> {
+  const parsed = await Bun.file(MODELS_JSON).json() as {
+    providers?: Record<string, { apiKey?: unknown }>;
+  };
+  const key = parsed.providers?.[PROVIDER_NAME]?.apiKey;
+  if (typeof key !== "string" || key.length === 0) {
+    throw new Error(`missing providers[${JSON.stringify(PROVIDER_NAME)}].apiKey in ${MODELS_JSON}`);
   }
-  // Also count bare (non-mangled) anthropic ids in O
-  let bareMatched = 0;
-  for (const raw of A) {
-    const u = unmangleAnthropicId(raw);
-    if (!u.transformed && O.has(u.unmangled)) bareMatched++;
-  }
-  const anthroMetaAvailable = A.length; // all
-
-  console.log("=== LIVE CPA VERIFICATION ===");
-  console.log(`OpenAI /v1/models ids: ${O.size}`);
-  console.log(`Anthropic rows: ${A.length} (with context_length>0: ${withCtx})`);
-  console.log(`Gemini rows: ${G.size}`);
-  console.log(`Unmangle: mangled matched in O = ${matched}, unmatched = ${unmatched}`);
-  console.log(`Unmangle: bare (non-mangled) matched in O = ${bareMatched}`);
-  console.log(`Examples: ${JSON.stringify(examples)}`);
-
-  // Overlap
-  let cpaContextWins = 0;
-  let omoSmallerWins = 0;
-  let defaulted = 0;
-  let inputFromGemini = 0;
-  for (const id of O) {
-    if (G.has(id)) inputFromGemini++;
-  }
-  console.log(`---`);
-  console.log(`Models with Gemini input modality: ${inputFromGemini}/${O.size}`);
-  console.log(`Models needing labelled defaults (alias overrides): 4 (gpt-spark, composer-2.5, MiniMax-M3, open-muse)`);
-  process.exit(0);
+  return key;
 }
 
-void main().catch((e) => { console.error(e); process.exit(1); });
+function registryFor(catalog: CatalogModel[], decisions: TierDecision[]) {
+  const tiers = new Map(decisions.map(({ id, tier }) => [id, tier]));
+  const models = catalog.flatMap(({ id }) => {
+    const tier = tiers.get(id);
+    if (!tier) return [];
+    return [{ provider: tier === "primary" ? PROVIDER_NAME : LAST_RESORT_PROVIDER_NAME, id }];
+  });
+  return {
+    getAll: () => models,
+    find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
+  } as Parameters<typeof validateFallbackChains>[1];
+}
+
+function chainSettings(chains: FallbackChain[]): Record<string, string[]> {
+  return Object.fromEntries(chains.map(({ target, entries }) => [target, entries]));
+}
+
+async function main(): Promise<void> {
+  const key = await inferenceKey();
+  const result = await fetchCatalog(ROOT, key, { timeoutMs: 20_000 });
+  if (!result.ok) throw new Error(result.reason);
+
+  const store = await loadOverrideStore();
+  const report = buildTierReport(result.models, toOverrideMap(store));
+  const routable = [...report.primary, ...report.last];
+  const providers = { primary: PROVIDER_NAME, last: LAST_RESORT_PROVIDER_NAME } as const;
+  const targets = report.primary.slice(0, 3).map(({ id }) => id);
+  const chains = generateFallbackChains({
+    catalog: result.models,
+    decisions: routable,
+    providers,
+    targets,
+  });
+
+  const distribution = { openai: 0, anthropic: 0, gemini: 0 };
+  for (const model of result.models) distribution[selectEndpoint(model).endpoint]++;
+
+  const routableIds = new Set(routable.map(({ id }) => id));
+  const chatUnfitIds = new Set(report.chatUnfit.map(({ id }) => id));
+  let chatUnfitLeaks = 0;
+  let orderViolations = 0;
+  let tailsPresent = 0;
+  for (const chain of chains) {
+    const firstLast = chain.entries.findIndex((entry) => entry.startsWith(`${LAST_RESORT_PROVIDER_NAME}/`));
+    if (firstLast >= 0) tailsPresent++;
+    if (firstLast >= 0 && chain.entries.slice(firstLast).some((entry) => entry.startsWith(`${PROVIDER_NAME}/`))) {
+      orderViolations++;
+    }
+    for (const entry of chain.entries) {
+      const id = entry.slice(entry.indexOf("/") + 1);
+      if (chatUnfitIds.has(id) || !routableIds.has(id)) chatUnfitLeaks++;
+    }
+  }
+
+  const warnings = validateFallbackChains(
+    chainSettings(chains),
+    registryFor(result.models, routable),
+  );
+  const sample = chains[0];
+  const boundary = sample?.entries.findIndex((entry) => entry.startsWith(`${LAST_RESORT_PROVIDER_NAME}/`)) ?? -1;
+
+  console.log("=== LIVE CPA TIER VERIFICATION ===");
+  console.log(`catalog: ${result.models.length}`);
+  console.log(`tiers: primary=${report.primary.length} last=${report.last.length} chatUnfit=${report.chatUnfit.length}`);
+  console.log(`endpoints: openai=${distribution.openai} anthropic=${distribution.anthropic} gemini=${distribution.gemini}`);
+  console.log(`optional endpoint failures: ${JSON.stringify(result.failures)}`);
+  console.log(`chains checked: ${chains.length}; chatUnfit leaks=${chatUnfitLeaks}; order violations=${orderViolations}; tails present=${tailsPresent}/${chains.length}`);
+  if (sample) {
+    console.log(`sample target: ${sample.target}`);
+    console.log(`sample primary entries: ${JSON.stringify(boundary < 0 ? sample.entries : sample.entries.slice(0, boundary))}`);
+    console.log(`sample last-resort entries: ${JSON.stringify(boundary < 0 ? [] : sample.entries.slice(boundary))}`);
+  }
+  console.log(`senpi validateFallbackChains warnings: ${warnings.length}`);
+  for (const warning of warnings) console.log(`warning: ${warning}`);
+  if (warnings.length > 0 || chatUnfitLeaks > 0 || orderViolations > 0) process.exitCode = 1;
+}
+
+void main().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`live verification failed: ${message}`);
+  process.exit(1);
+});
