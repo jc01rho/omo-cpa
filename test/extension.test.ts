@@ -58,7 +58,7 @@ describe("/cpa tier", () => {
     const dir = join(tmpdir(), `omo-cpa-extension-${crypto.randomUUID()}`);
     tempPaths.push(dir);
     const overridePath = join(dir, "tier-overrides.json");
-    const { pi, ctx, commands, registered } = mockPi();
+    const { pi, ctx, commands, messages, registered } = mockPi();
     omoCpa(pi, {
       overridePath,
       loadProviderData: async () => ({
@@ -73,6 +73,13 @@ describe("/cpa tier", () => {
     const latestPrimary = [...registered].reverse().find(({ name }) => name === "local-proxy");
     expect(latestPrimary?.config.models?.map(({ id }) => id)).toContain("cheap-model");
     expect((await loadOverrideStore(overridePath)).overrides["cheap-model"]?.tier).toBe("primary");
+
+    await command.handler("tier promote temporarily-absent", ctx);
+    await command.handler("tier", ctx);
+    const listing = JSON.stringify(messages.at(-1));
+    expect(listing).toContain("cheap-model → primary");
+    expect(listing).toContain("비활성 override");
+    expect(listing).toContain("temporarily-absent → primary");
   });
 });
 

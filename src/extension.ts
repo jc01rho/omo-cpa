@@ -243,15 +243,15 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
   function renderTierSummary(tiered: TieredProviderData): string {
     const { report } = tiered;
     const activeOverrides = report.decisions.filter(({ overridden }) => overridden);
-    const row = (label: string, ids: readonly { id: string }[]) =>
-      `${label} (${ids.length})${ids.length > 0 ? `\n  ${ids.map(({ id }) => id).join("\n  ")}` : " · 없음"}`;
+    const row = (label: string, entries: readonly string[]) =>
+      `${label} (${entries.length})${entries.length > 0 ? `\n  ${entries.join("\n  ")}` : " · 없음"}`;
     return [
       "CPA 모델 tier",
-      row("primary", report.primary),
-      row("last-resort", report.last),
-      row("chat-unfit (명시 선택만 가능, 체인 제외)", report.chatUnfit),
-      row("활성 override", activeOverrides),
-      row("비활성 override", report.inactiveOverrides),
+      row("primary", report.primary.map(({ id }) => id)),
+      row("last-resort", report.last.map(({ id }) => id)),
+      row("chat-unfit (명시 선택만 가능, 체인 제외)", report.chatUnfit.map(({ id }) => id)),
+      row("활성 override", activeOverrides.map(({ id, tier }) => `${id} → ${tier}`)),
+      row("비활성 override", report.inactiveOverrides.map(({ id, tier }) => `${id} → ${tier}`)),
     ].join("\n\n");
   }
 
