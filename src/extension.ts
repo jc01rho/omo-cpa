@@ -1,21 +1,18 @@
 /**
  * omo extension entry.
  *
- * CPA is now a first-class omo provider registered entirely in code. On load,
- * `registerCpaProvider` calls `pi.registerProvider("local-proxy", ...)` with
- * an `oauth` block so `/login local-proxy` stores the key in
- * `~/.omo/agent/auth.json` (omo-owned), and `refreshModels` fetches the real
- * catalog from the CPA server and persists it via `context.publish({ persist })`.
- * `models.json` is read at most once, read-only, to migrate the existing key
- * and any curated per-model values into the plugin's own cache; it is never
- * written to and no longer required.
+ * CPA is registered as two in-memory providers: `local-proxy` for primary
+ * workhorses and `local-proxy-last` for explicit last-resort routing. The latter
+ * opts out of senpi's implicit family expansion. Both refresh from the same
+ * three-format catalog; `/login local-proxy` remains available through oauth.
+ * `models.json` is only read as a migration source for the existing key and
+ * curated limits. This extension never writes omo-owned configuration files.
  *
  * The existing `/cpa` report, health circuit breaker, secret redaction, and
  * fail-open handlers are preserved. The "model drift guard" is reframed:
  * absence from `/v1/models` is no longer treated as "dead" for the four alias
  * models that resolve via upstream mapping — see `src/provider.ts`'s
- * DECLARED_OVERRIDES and the probe-based "declared but neither listed nor
- * callable" check documented in README.
+ * DECLARED_OVERRIDES.
  *
  * Contract notes verified against senpi's extension type definitions:
  * - `model_select` CANNOT change the model (its result only carries a system
