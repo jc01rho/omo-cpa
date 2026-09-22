@@ -230,7 +230,7 @@ describe("tier-separated provider registration", () => {
     expect(primaryIds.has("gpt-image-2")).toBe(false);
 
     expect(primary.oauth).toBeDefined();
-    expect(last.oauth).toBeUndefined();
+    expect(last.oauth).toBeDefined();
     expect(typeof primary.refreshModels).toBe("function");
     expect(typeof last.refreshModels).toBe("function");
     expect(primary.fallbackEligible).toBeUndefined();

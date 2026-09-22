@@ -1,4 +1,5 @@
 /** CPA provider registration and catalog-to-runtime model conversion. */
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fetchCatalog, selectEndpoint } from "./endpoint.ts";
@@ -31,6 +32,7 @@ export interface ProviderConfig {
   baseUrl?: string;
   api?: string;
   authHeader?: boolean;
+  apiKey?: string;
   models?: ProviderModel[];
   refreshModels?(context: RefreshModelsContext): Promise<ProviderModel[]>;
   fallbackEligible?(): boolean;
@@ -188,35 +190,35 @@ export function registerCpaProvider(pi: unknown, data?: ProviderRegistrationData
   const register = (pi as { registerProvider?: unknown }).registerProvider;
   if (typeof register !== "function") return;
   const tiered = data ? buildProviderRegistration(data) : null;
+  const apiKey = readMigrationApiKeySync();
   try {
-    register(PROVIDER_NAME, providerConfig("primary", tiered?.primaryModels ?? []));
-    register(LAST_RESORT_PROVIDER_NAME, providerConfig("last", tiered?.lastModels ?? []));
+    register(PROVIDER_NAME, providerConfig("primary", tiered?.primaryModels ?? [], apiKey));
+    register(LAST_RESORT_PROVIDER_NAME, providerConfig("last", tiered?.lastModels ?? [], apiKey));
   } catch (error) {
     console.error("[omo-cpa] registerProvider threw:", redact((error as Error).message));
     throw error;
   }
 }
 
-function providerConfig(tier: Tier, models: ProviderModel[]): ProviderConfig {
+function providerConfig(tier: Tier, models: ProviderModel[], apiKey: string | null): ProviderConfig {
   const common: ProviderConfig = {
     name: tier === "primary" ? "CLI Proxy API (CPA)" : "CLI Proxy API (CPA Last Resort)",
     baseUrl: DEFAULT_BASE_URL,
     authHeader: true,
+    ...(apiKey ? { apiKey } : {}),
     api: "openai-responses",
     models,
     refreshModels: makeRefreshModels(tier),
   };
-  if (tier === "last") return { ...common, fallbackEligible: () => false };
-  return {
-    ...common,
-    oauth: {
-      name: "CLI Proxy API (CPA)",
-      isSubscription: false,
-      login,
-      refreshToken,
-      getApiKey,
-    },
+  const oauth = {
+    name: "CLI Proxy API (CPA)",
+    isSubscription: false,
+    login,
+    refreshToken,
+    getApiKey,
   };
+  if (tier === "last") return { ...common, oauth, fallbackEligible: () => false };
+  return { ...common, oauth };
 }
 
 function makeRefreshModels(tier: Tier): (context: RefreshModelsContext) => Promise<ProviderModel[]> {
@@ -376,6 +378,21 @@ function credentialApiKey(credential: unknown): string | null {
 
 function positiveNumber(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/** Synchronous because provider registration itself is synchronous and in-memory. */
+function readMigrationApiKeySync(): string | null {
+  const envKey = process.env["OMO_CPA_API_KEY"]?.trim();
+  if (envKey) return envKey;
+  try {
+    const parsed = JSON.parse(readFileSync(join(homedir(), ".omo", "agent", "models.json"), "utf8")) as {
+      providers?: Record<string, { apiKey?: unknown }>;
+    };
+    const key = parsed.providers?.[PROVIDER_NAME]?.apiKey;
+    return typeof key === "string" && key.length > 0 ? key : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Background read-only migration of ~/.omo/agent/models.json. */
