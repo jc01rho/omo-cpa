@@ -2,7 +2,7 @@ import type { CatalogModel, Endpoint } from "./tier-types.ts";
 
 const ANTHROPIC_BUG_PREFIX = "claude-fable-5-dd-";
 const ANTHROPIC_VERSION = "2023-06-01";
-const MAX_SANE_OUTPUT_TOKENS = 65_536;
+const MAX_SANE_OUTPUT_TOKENS = 250_000;
 
 export interface CatalogIssue {
   kind: "discarded-metadata" | "metadata-disagreement" | "max-tokens-clamped";
@@ -243,9 +243,9 @@ function clampOutputLimit(model: CatalogModel, issues: CatalogIssue[]): void {
   if (model.maxTokens === null || model.contextLength === null || model.maxTokens < model.contextLength) return;
 
   const from = model.maxTokens;
-  const quarterContext = Math.floor(model.contextLength / 4);
-  const to = quarterContext > 0
-    ? Math.min(MAX_SANE_OUTPUT_TOKENS, quarterContext)
+  const belowContext = model.contextLength - 1;
+  const to = belowContext > 0
+    ? Math.min(MAX_SANE_OUTPUT_TOKENS, belowContext)
     : null;
   model.maxTokens = to !== null && to < model.contextLength ? to : null;
   issues.push({

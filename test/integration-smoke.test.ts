@@ -2,8 +2,8 @@
  * Integration smoke test for the installed extension.
  *
  * Verifies that when loaded from its installed path with a mock `pi`,
- * the extension registers `local-proxy`, carries `oauth`, `refreshModels`,
- * `/cpa`, and swallows malformed events — all without throwing.
+ * the extension registers both tier providers, keeps oauth on `local-proxy`,
+ * exposes `refreshModels` and `/cpa`, and swallows malformed events.
  *
  * Cannot exercise real `/login` (interactively requires user input);
  * that limitation is stated explicitly rather than assumed to work.
@@ -44,13 +44,8 @@ describe("installed extension smoke", () => {
     // Call the factory once
     ext(pi);
 
-    // registerProvider is called async but synchronously invokes registerCpaProvider,
-    // so the registration should be visible immediately after the factory returns.
-    // Allow microtask drain for the background registration promise.
-    await new Promise((r) => setTimeout(r, 20));
-
-    // Provider must have been queued or registered (the mock has it synchronously)
-    expect(registered.length).toBeGreaterThanOrEqual(1);
+    // Both registrations are synchronous; no timing-based wait is needed.
+    expect(registered).toHaveLength(2);
     const reg = registered.find((r) => r.name === "local-proxy");
     expect(reg).toBeDefined();
     const conf = reg!.conf as Record<string, unknown>;
@@ -59,6 +54,10 @@ describe("installed extension smoke", () => {
     expect(typeof conf.refreshModels).toBe("function");
     expect(conf.oauth).toBeDefined();
     expect(typeof (conf.oauth as Record<string, unknown>).login).toBe("function");
+    const last = registered.find((r) => r.name === "local-proxy-last")?.conf as Record<string, unknown> | undefined;
+    expect(last).toBeDefined();
+    expect(typeof last?.refreshModels).toBe("function");
+    expect((last?.fallbackEligible as (() => boolean) | undefined)?.()).toBe(false);
 
     // /cpa command present
     expect(commands.has("cpa")).toBe(true);

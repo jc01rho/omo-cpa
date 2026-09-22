@@ -24,7 +24,10 @@ import {
   getApiKey,
   refreshToken,
   login,
+  LAST_RESORT_PROVIDER_NAME,
+  registerCpaProvider,
 } from "../src/provider.ts";
+import type { CatalogModel } from "../src/tier-types.ts";
 
 // ---------- unmangleAnthropicId ----------
 
@@ -180,6 +183,60 @@ describe("safer-of-two contextWindow rule", () => {
 });
 
 // ---------- provider registration shape ----------
+
+function catalogModel(id: string, extra: Partial<CatalogModel> = {}): CatalogModel {
+  return {
+    id,
+    ownedBy: null,
+    displayName: id,
+    contextLength: 100_000,
+    maxTokens: 8_000,
+    inputModalities: ["TEXT"],
+    outputModalities: ["TEXT"],
+    thinking: false,
+    ...extra,
+  };
+}
+
+describe("tier-separated provider registration", () => {
+  test("registers exactly two disjoint providers with last-resort excluded from implicit fallback", () => {
+    const registered: Array<{ name: string; config: ProviderConfig }> = [];
+    const pi = {
+      registerProvider(name: string, config: ProviderConfig) {
+        registered.push({ name, config });
+      },
+    };
+    registerCpaProvider(pi, {
+      catalog: [
+        catalogModel("gpt-5.6"),
+        catalogModel("cheap-model"),
+        catalogModel("gpt-image-2", { outputModalities: ["IMAGE"] }),
+      ],
+      contextOverrides: new Map(),
+      overrides: {},
+    });
+
+    expect(registered.map(({ name }) => name)).toEqual([PROVIDER_NAME, LAST_RESORT_PROVIDER_NAME]);
+    const primary = registered[0]?.config;
+    const last = registered[1]?.config;
+    if (!primary || !last) throw new Error("expected two providers");
+
+    const primaryIds = new Set(primary.models?.map(({ id }) => id));
+    const lastIds = new Set(last.models?.map(({ id }) => id));
+    expect([...primaryIds].filter((id) => lastIds.has(id))).toEqual([]);
+    expect(primaryIds.has("gpt-5.6")).toBe(true);
+    expect(lastIds.has("cheap-model")).toBe(true);
+    expect(lastIds.has("gpt-image-2")).toBe(true);
+    expect(primaryIds.has("gpt-image-2")).toBe(false);
+
+    expect(primary.oauth).toBeDefined();
+    expect(last.oauth).toBeUndefined();
+    expect(typeof primary.refreshModels).toBe("function");
+    expect(typeof last.refreshModels).toBe("function");
+    expect(primary.fallbackEligible).toBeUndefined();
+    expect(last.fallbackEligible?.()).toBe(false);
+  });
+});
 
 describe("provider registration shape", () => {
   test("PROVIDER_NAME equals existing omo routed provider", () => {

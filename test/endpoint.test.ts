@@ -150,7 +150,7 @@ describe("mergeCatalogs", () => {
       throw new Error("expected merged token limits");
     }
     expect(model.maxTokens).toBeLessThan(model.contextLength);
-    expect(model.maxTokens).toBeLessThanOrEqual(65_536);
+    expect(model.maxTokens).toBeLessThanOrEqual(250_000);
     expect(result.issues).toContainEqual(expect.objectContaining({
       kind: "max-tokens-clamped",
       modelId: "grok-4.7",
