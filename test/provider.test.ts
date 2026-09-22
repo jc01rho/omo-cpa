@@ -26,6 +26,7 @@ import {
   login,
   LAST_RESORT_PROVIDER_NAME,
   registerCpaProvider,
+  buildProviderRegistration,
 } from "../src/provider.ts";
 import type { CatalogModel } from "../src/tier-types.ts";
 
@@ -319,5 +320,58 @@ describe("Stats shape", () => {
     expect(s.overruledContext).toBe(0);
     expect(s.inputFromGemini).toBe(0);
     expect(s.inputFromDefault).toBe(0);
+  });
+});
+
+// ---------- declared alias tier (review blocker A) ----------
+
+function aliasCatalog(id: string): CatalogModel {
+  return {
+    id,
+    ownedBy: null,
+    displayName: id,
+    contextLength: 128000,
+    maxTokens: 8192,
+    inputModalities: null,
+    outputModalities: null,
+    thinking: null,
+  };
+}
+
+describe("declared alias tier follows upstream identity, not the alias id", () => {
+  function tiersFor(catalog: CatalogModel[]) {
+    const { primaryModels, lastModels } = buildProviderRegistration({
+      catalog,
+      contextOverrides: new Map(),
+      overrides: {},
+    });
+    return {
+      primary: new Set(primaryModels.map((m) => m.id)),
+      last: new Set(lastModels.map((m) => m.id)),
+    };
+  }
+
+  test("gpt-spark is last: its id says gpt but its upstream is not a primary family", () => {
+    const { primary, last } = tiersFor([aliasCatalog("gpt-5.6-sol")]);
+    expect(primary.has("gpt-5.6-sol")).toBe(true);
+    expect(primary.has("gpt-spark")).toBe(false);
+    expect(last.has("gpt-spark")).toBe(true);
+  });
+
+  test("an alias whose upstream is free stays last even when its id names a primary family", () => {
+    const { primary, last } = tiersFor([aliasCatalog("muse-spark-1.1")]);
+    expect(primary.has("open-muse")).toBe(false);
+    expect(last.has("open-muse")).toBe(true);
+  });
+
+  test("an alias whose upstream id is itself a primary family stays primary", () => {
+    // The alias id names no family; only its upstream does. Classification must follow the upstream.
+    const alias: CatalogModel = {
+      ...aliasCatalog("bundle-opus"),
+      displayName: "claude-opus-5",
+    };
+    const { primary, last } = tiersFor([alias, aliasCatalog("gpt-5.6-sol")]);
+    expect(primary.has("bundle-opus")).toBe(true);
+    expect(last.has("bundle-opus")).toBe(false);
   });
 });

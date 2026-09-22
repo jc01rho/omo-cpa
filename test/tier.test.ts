@@ -233,6 +233,37 @@ describe("classify — displayName rescues (measured)", () => {
 // MEASURED EVIDENCE — id looks primary, displayName proves it is not.
 // omo currently routes real work to these two. This is the user's complaint.
 // ---------------------------------------------------------------------------
+describe("classify — declared aliases use upstream identity", () => {
+  const decisions = classify([
+    { ...model("gpt-spark", { displayName: "GPT Spark" }), upstreamModelId: "solar-mini4-preview" },
+    { ...model("open-muse", { displayName: "Open Muse" }), upstreamModelId: "muse-spark-1.3-contributor-free" },
+    { ...model("gpt-claude-alias", { displayName: "GPT Claude Alias" }), upstreamModelId: "claude-opus-5" },
+    model("gpt-5.6-sol", { displayName: "GPT 5.6 Sol" }),
+  ]);
+
+  test("a primary-looking alias with a non-primary upstream is last-resort", () => {
+    expect(decisionFor(decisions, "gpt-spark").tier).toBe("last");
+  });
+
+  test("an alias with a free upstream is last-resort because the upstream is free", () => {
+    const alias = decisionFor(decisions, "open-muse");
+    expect(alias.tier).toBe("last");
+    expect(alias.reason).toMatch(/free/i);
+  });
+
+  test("an alias with a primary-family upstream uses the upstream family", () => {
+    const alias = decisionFor(decisions, "gpt-claude-alias");
+    expect(alias.tier).toBe("primary");
+    expect(alias.family).toBe("claude");
+  });
+
+  test("a real catalog model still matches its own primary-family id", () => {
+    const real = decisionFor(decisions, "gpt-5.6-sol");
+    expect(real.tier).toBe("primary");
+    expect(real.family).toBe("gpt");
+  });
+});
+
 describe("classify — demotions (measured)", () => {
   test("higher-coding is a free preview, not a strong model", () => {
     const d = decisionFor(

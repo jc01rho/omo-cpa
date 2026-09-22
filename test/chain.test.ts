@@ -27,11 +27,11 @@ function model(
   };
 }
 
-function decision(id: string, tier: Tier): TierDecision {
+function decision(id: string, tier: Tier, family: TierDecision["family"] = null): TierDecision {
   return {
     id,
     tier,
-    family: tier === "primary" ? "gpt" : null,
+    family: tier === "primary" ? (family ?? "gpt") : null,
     reason: `test ${tier}`,
     overridden: false,
   };
@@ -41,6 +41,7 @@ type ModelSpec = readonly [
   id: string,
   tier: Tier,
   overrides?: Partial<Omit<CatalogModel, "id">>,
+  family?: TierDecision["family"],
 ];
 
 function input(
@@ -49,7 +50,7 @@ function input(
 ) {
   return {
     catalog: specs.map(([id, , overrides]) => model(id, overrides)),
-    decisions: specs.map(([id, tier]) => decision(id, tier)),
+    decisions: specs.map(([id, tier, , family]) => decision(id, tier, family)),
     providers,
     targets,
   };
@@ -181,6 +182,37 @@ describe("generateFallbackChains", () => {
     expect(entries).toHaveLength(PRIMARY_CHAIN_LIMIT + LAST_RESORT_CHAIN_LIMIT);
     expect(entries[0]).toBe(`${providers.primary}/p-best`);
     expect(entries[PRIMARY_CHAIN_LIMIT]).toBe(`${providers.last}/l-best`);
+  });
+
+  test("9. every present primary family appears before the first last-resort entry", () => {
+    const families = ["muse", "gpt", "claude", "gemini", "glm", "deepseek", "grok"] as const;
+    const specs: ModelSpec[] = [
+      ["target", "primary", { contextLength: 200_000 }, "claude"],
+    ];
+    // The two huge families ship far more than PRIMARY_CHAIN_LIMIT models, exactly the
+    // shape of the live catalog where gemini/muse monopolise a flat top-14.
+    for (const family of families) {
+      const huge = family === "gemini" || family === "muse";
+      const count = huge ? PRIMARY_CHAIN_LIMIT : 1;
+      for (let n = 0; n < count; n++) {
+        specs.push([
+          `${family}-${n}`,
+          "primary",
+          { contextLength: huge ? 1_048_576 - n : 32_000 },
+          family,
+        ]);
+      }
+    }
+    specs.push(["junk-free", "last", { contextLength: 8_000 }]);
+    const generated = generateFallbackChains(input(specs, ["target"]));
+    const entries = chainFor(generated, "target").entries;
+    const firstLast = entries.findIndex((entry) => entry.startsWith(`${providers.last}/`));
+    const primarySection = entries.slice(0, firstLast === -1 ? entries.length : firstLast);
+    for (const family of families) {
+      if (family === "claude") continue;
+      expect(primarySection.some((entry) => entry.includes(`/${family}-`))).toBe(true);
+    }
+    expect(entries.at(-1)).toBe(`${providers.last}/junk-free`);
   });
 
   test("8a. zero primaries produces a tail-only chain", () => {
