@@ -157,12 +157,11 @@ export { DECLARED_OVERRIDES };
 
 /** Build both disjoint provider model sets from the one merged endpoint catalog. */
 export function buildProviderRegistration(data: ProviderRegistrationData): TieredProviderData {
-  const catalog = appendDeclaredAliases(data.catalog);
-  const upstreamByAlias: Record<string, string> = {};
-  for (const [id, declared] of Object.entries(DECLARED_OVERRIDES)) {
-    if (declared.upstreamModelId) upstreamByAlias[id] = declared.upstreamModelId;
-  }
-  const report = buildTierReport(catalog, data.overrides, upstreamByAlias);
+  const catalog = data.catalog.map((model) => {
+    const upstreamModelId = DECLARED_OVERRIDES[model.id]?.upstreamModelId;
+    return upstreamModelId === undefined ? { ...model } : { ...model, upstreamModelId };
+  });
+  const report = buildTierReport(catalog, data.overrides);
   const stats: Stats = {
     realContext: 0,
     defaultedContext: 0,
@@ -279,28 +278,6 @@ export async function loadProviderData(options: {
   });
   if (!result.ok) throw new Error(result.reason);
   return { catalog: result.models, contextOverrides: migration.contextOverrides };
-}
-
-function appendDeclaredAliases(catalog: readonly CatalogModel[]): CatalogModel[] {
-  const models = catalog.map((model) => ({ ...model }));
-  const present = new Set(models.map(({ id }) => id));
-  for (const [id, declared] of Object.entries(DECLARED_OVERRIDES)) {
-    if (present.has(id)) continue;
-    models.push({
-      id,
-      ownedBy: null,
-      // Upstream identity is stronger than a cosmetic alias label: it lets the
-      // classifier see both the real family and a verified free-tier marker.
-      displayName: declared.upstreamModelId ?? id,
-      upstreamModelId: declared.upstreamModelId,
-      contextLength: null,
-      maxTokens: null,
-      inputModalities: declared.input.map((item) => item.toUpperCase()),
-      outputModalities: ["TEXT"],
-      thinking: true,
-    });
-  }
-  return models;
 }
 
 function toProviderModel(

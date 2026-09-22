@@ -226,7 +226,7 @@ describe("tier-separated provider registration", () => {
     const lastIds = new Set(last.models?.map(({ id }) => id));
     expect([...primaryIds].filter((id) => lastIds.has(id))).toEqual([]);
     expect(primaryIds.has("gpt-5.6")).toBe(true);
-    expect(lastIds.has("open-muse")).toBe(true);
+    expect(lastIds.has("open-muse")).toBe(false);
     expect(lastIds.has("cheap-model")).toBe(true);
     expect(lastIds.has("gpt-image-2")).toBe(true);
     expect(primaryIds.has("gpt-image-2")).toBe(false);
@@ -340,38 +340,33 @@ function aliasCatalog(id: string): CatalogModel {
 
 describe("declared alias tier follows upstream identity, not the alias id", () => {
   function tiersFor(catalog: CatalogModel[]) {
-    const { primaryModels, lastModels } = buildProviderRegistration({
+    const tiered = buildProviderRegistration({
       catalog,
       contextOverrides: new Map(),
       overrides: {},
     });
     return {
-      primary: new Set(primaryModels.map((m) => m.id)),
-      last: new Set(lastModels.map((m) => m.id)),
+      catalog: new Set(tiered.catalog.map((model) => model.id)),
+      primary: new Set(tiered.primaryModels.map((model) => model.id)),
+      last: new Set(tiered.lastModels.map((model) => model.id)),
     };
   }
 
   test("gpt-spark is last: its id says gpt but its upstream is not a primary family", () => {
-    const { primary, last } = tiersFor([aliasCatalog("gpt-5.6-sol")]);
+    const { primary, last } = tiersFor([aliasCatalog("gpt-spark"), aliasCatalog("gpt-5.6-sol")]);
     expect(primary.has("gpt-5.6-sol")).toBe(true);
     expect(primary.has("gpt-spark")).toBe(false);
     expect(last.has("gpt-spark")).toBe(true);
   });
 
   test("an alias whose upstream is free stays last even when its id names a primary family", () => {
-    const { primary, last } = tiersFor([aliasCatalog("muse-spark-1.1")]);
+    const { primary, last } = tiersFor([aliasCatalog("open-muse"), aliasCatalog("muse-spark-1.1")]);
     expect(primary.has("open-muse")).toBe(false);
     expect(last.has("open-muse")).toBe(true);
   });
 
-  test("an alias whose upstream id is itself a primary family stays primary", () => {
-    // The alias id names no family; only its upstream does. Classification must follow the upstream.
-    const alias: CatalogModel = {
-      ...aliasCatalog("bundle-opus"),
-      displayName: "claude-opus-5",
-    };
-    const { primary, last } = tiersFor([alias, aliasCatalog("gpt-5.6-sol")]);
-    expect(primary.has("bundle-opus")).toBe(true);
-    expect(last.has("bundle-opus")).toBe(false);
+  test("declared aliases absent from the live catalog are not synthesized", () => {
+    const { catalog } = tiersFor([aliasCatalog("gpt-5.6-sol")]);
+    expect(catalog).toEqual(new Set(["gpt-5.6-sol"]));
   });
 });

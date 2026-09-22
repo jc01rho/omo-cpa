@@ -9,10 +9,8 @@
  * curated limits. This extension never writes omo-owned configuration files.
  *
  * The existing `/cpa` report, health circuit breaker, secret redaction, and
- * fail-open handlers are preserved. The "model drift guard" is reframed:
- * absence from `/v1/models` is no longer treated as "dead" for the four alias
- * models that resolve via upstream mapping — see `src/provider.ts`'s
- * DECLARED_OVERRIDES.
+ * fail-open handlers are preserved. Declared overrides only enrich models that
+ * are present in the live catalog; absent aliases are never synthesized.
  *
  * Contract notes verified against senpi's extension type definitions:
  * - `model_select` CANNOT change the model (its result only carries a system
