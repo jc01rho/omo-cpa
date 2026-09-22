@@ -1,12 +1,13 @@
 /**
  * omo extension entry.
  *
- * CPA is registered as two in-memory providers: `local-proxy` for primary
- * workhorses and `local-proxy-last` for explicit last-resort routing. The latter
+ * CPA is registered as two in-memory providers: `cliproxyapi` for primary
+ * workhorses and `cliproxyapi-last` for explicit last-resort routing. The latter
  * opts out of senpi's implicit family expansion. Both refresh from the same
- * three-format catalog; `/login local-proxy` remains available through oauth.
- * The plugin is self-contained: it neither reads nor writes omo's own
- * configuration, and the inference key arrives through `/login`.
+ * three-format catalog; `/login cliproxyapi` remains available through oauth.
+ * The plugin ignores omo's model and routing configuration. It only reads the
+ * oauth credential that omo stores after `/login cliproxyapi`; it never writes
+ * omo-owned files itself.
  *
  * The existing `/cpa` report, health circuit breaker, secret redaction, and
  * fail-open handlers are preserved. Declared overrides only enrich models that
@@ -151,7 +152,7 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
   pi.on("before_provider_request", (event: any) => {
     try {
       const provider = event?.model?.provider;
-      state.lastRequestWasCpa = typeof provider === "string" && provider.startsWith("local-proxy");
+      state.lastRequestWasCpa = provider === PROVIDER_NAME || provider === LAST_RESORT_PROVIDER_NAME;
     } catch { /* fail open */ }
     return undefined;
   });

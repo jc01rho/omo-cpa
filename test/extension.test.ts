@@ -70,7 +70,7 @@ describe("/cpa tier", () => {
     const command = commands.get("cpa");
     await command.handler("tier promote cheap-model", ctx);
 
-    const latestPrimary = [...registered].reverse().find(({ name }) => name === "local-proxy");
+    const latestPrimary = [...registered].reverse().find(({ name }) => name === "cliproxyapi");
     expect(latestPrimary?.config.models?.map(({ id }) => id)).toContain("cheap-model");
     expect((await loadOverrideStore(overridePath)).overrides["cheap-model"]?.tier).toBe("primary");
 
@@ -134,7 +134,7 @@ describe("fail-open behaviour", () => {
     const { pi, handlers } = mockPi();
     omoCpa(pi);
     const out = handlers.get("before_provider_request")!({
-      model: { provider: "local-proxy", id: "gpt-spark" },
+      model: { provider: "cliproxyapi", id: "gpt-spark" },
       payload: { model: "gpt-spark" },
     });
     expect(out).toBeUndefined();

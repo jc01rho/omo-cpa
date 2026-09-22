@@ -1,14 +1,14 @@
 /** Shared shapes. No secret ever enters these types. */
 
 export interface ProviderConfig {
-  /** omo provider name, e.g. "local-proxy". */
+  /** omo provider name, e.g. "cliproxyapi". */
   name: string;
   /** CPA server root with the API suffix stripped, e.g. http://host:8317 */
   root: string;
 }
 
 export interface CpaConfig {
-  /** CPA server root shared by every local-proxy* provider. */
+  /** CPA server root shared by every cliproxyapi* provider. */
   root: string;
   providers: ProviderConfig[];
   /** Where the config was read from (for the report). */

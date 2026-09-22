@@ -42,7 +42,7 @@ function chainSettings(chains: FallbackChain[]): Record<string, string[]> {
 
 async function main(): Promise<void> {
   const migration = await readMigrationSource();
-  if (!migration.apiKey) throw new Error("missing local-proxy inference key");
+  if (!migration.apiKey) throw new Error("missing cliproxyapi inference key");
   const result = await fetchCatalog(ROOT, migration.apiKey, { timeoutMs: 20_000 });
   if (!result.ok) throw new Error(result.reason);
 

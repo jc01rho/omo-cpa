@@ -34,6 +34,6 @@ export function loadConfig(apiKeyOverride?: string | null): LoadedConfig {
     config: { root, providers: [], source: "env", hasApiKey: !!apiKey, hasManagementKey: !!managementKey },
     apiKey,
     managementKey,
-    reason: apiKey ? null : "추론 키 없음 — /login local-proxy 또는 OMO_CPA_API_KEY",
+    reason: apiKey ? null : "추론 키 없음 — /login cliproxyapi 또는 OMO_CPA_API_KEY",
   };
 }

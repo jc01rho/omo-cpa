@@ -5,6 +5,9 @@
  * These tests do NOT hit the network (except where noted) and never print API keys.
  */
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   unmangleAnthropicId,
   type UnmangleResult,
@@ -27,6 +30,7 @@ import {
   LAST_RESORT_PROVIDER_NAME,
   registerCpaProvider,
   buildProviderRegistration,
+  readStoredPrimaryCredential,
 } from "../src/provider.ts";
 import type { CatalogModel } from "../src/tier-types.ts";
 
@@ -234,8 +238,10 @@ describe("tier-separated provider registration", () => {
     expect(lastIds.has("gpt-image-2")).toBe(true);
     expect(primaryIds.has("gpt-image-2")).toBe(false);
 
-    expect(primary.oauth).toBeDefined();
-    expect(last.oauth).toBeDefined();
+    expect(primary.name).toBe("CLI Proxy API (CPA)");
+    expect(last.name).toBe("CLI Proxy API (CPA Last Resort)");
+    expect(primary.oauth?.name).toBe("CLI Proxy API (CPA)");
+    expect(last.oauth).toBeUndefined();
     expect(typeof primary.refreshModels).toBe("function");
     expect(typeof last.refreshModels).toBe("function");
     expect(primary.fallbackEligible).toBeUndefined();
@@ -244,8 +250,22 @@ describe("tier-separated provider registration", () => {
 });
 
 describe("provider registration shape", () => {
-  test("PROVIDER_NAME equals existing omo routed provider", () => {
-    expect(PROVIDER_NAME).toBe("local-proxy");
+  test("PROVIDER_NAME is the /login id", () => {
+    expect(PROVIDER_NAME).toBe("cliproxyapi");
+    expect(LAST_RESORT_PROVIDER_NAME).toBe("cliproxyapi-last");
+  });
+
+  test("last-resort shares the credential stored by /login cliproxyapi", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omo-cpa-auth-"));
+    const path = join(dir, "auth.json");
+    try {
+      await Bun.write(path, JSON.stringify({
+        cliproxyapi: { access: "senpi-shared", refresh: "senpi-shared", expires: Date.now() + 1000 },
+      }));
+      expect(readStoredPrimaryCredential(path)).toBe("senpi-shared");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("DEFAULT_BASE_URL matches live server", () => {

@@ -2,7 +2,7 @@
  * Integration smoke test for the installed extension.
  *
  * Verifies that when loaded from its installed path with a mock `pi`,
- * the extension registers both tier providers, keeps oauth on `local-proxy`,
+ * the extension registers both tier providers, keeps oauth on `cliproxyapi`,
  * exposes `refreshModels` and `/cpa`, and swallows malformed events.
  *
  * Cannot exercise real `/login` (interactively requires user input);
@@ -46,7 +46,7 @@ describe("installed extension smoke", () => {
 
     // Both registrations are synchronous; no timing-based wait is needed.
     expect(registered).toHaveLength(2);
-    const reg = registered.find((r) => r.name === "local-proxy");
+    const reg = registered.find((r) => r.name === "cliproxyapi");
     expect(reg).toBeDefined();
     const conf = reg!.conf as Record<string, unknown>;
     expect(conf.baseUrl).toBe("http://152.69.234.237:8317");
@@ -54,7 +54,7 @@ describe("installed extension smoke", () => {
     expect(typeof conf.refreshModels).toBe("function");
     expect(conf.oauth).toBeDefined();
     expect(typeof (conf.oauth as Record<string, unknown>).login).toBe("function");
-    const last = registered.find((r) => r.name === "local-proxy-last")?.conf as Record<string, unknown> | undefined;
+    const last = registered.find((r) => r.name === "cliproxyapi-last")?.conf as Record<string, unknown> | undefined;
     expect(last).toBeDefined();
     expect(typeof last?.refreshModels).toBe("function");
     expect((last?.fallbackEligible as (() => boolean) | undefined)?.()).toBe(false);
@@ -97,7 +97,7 @@ describe("installed extension smoke", () => {
     const { default: ext } = await import("../src/extension.ts");
     // We don't await ext if it's sync; just call and check.
     ext(pi);
-    const conf = registered.find((r) => r.name === "local-proxy")?.conf as Record<string, unknown> | undefined;
+    const conf = registered.find((r) => r.name === "cliproxyapi")?.conf as Record<string, unknown> | undefined;
     if (conf && conf.oauth) {
       expect(typeof (conf.oauth as Record<string, unknown>).login).toBe("function");
     }

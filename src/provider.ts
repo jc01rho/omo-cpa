@@ -1,4 +1,7 @@
 /** CPA provider registration and catalog-to-runtime model conversion. */
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { selectEndpoint } from "./endpoint.ts";
 import { getCatalog } from "./catalog.ts";
 import { loadConfig } from "./config.ts";
@@ -96,9 +99,9 @@ export function readMigrationSource(): {
   return { apiKey, contextOverrides: new Map(), hasApiKey: !!apiKey };
 }
 
-export const PROVIDER_NAME = "local-proxy";
+export const PROVIDER_NAME = "cliproxyapi";
 /** Explicit-only provider: its hook removes it from senpi's implicit family expansion. */
-export const LAST_RESORT_PROVIDER_NAME = "local-proxy-last";
+export const LAST_RESORT_PROVIDER_NAME = "cliproxyapi-last";
 export const DEFAULT_BASE_URL = "http://152.69.234.237:8317";
 
 const DECLARED_OVERRIDES: Readonly<Record<string, {
@@ -212,6 +215,10 @@ function providerConfig(tier: Tier, models: ProviderModel[], apiKey: string | nu
     models,
     refreshModels: makeRefreshModels(tier),
   };
+  // Only the primary provider has oauth: one /login covers both tiers.
+  // The last-resort provider borrows the credential stored for 'cliproxyapi'
+  // from auth.json instead of requiring a second login.
+  if (tier === "last") return { ...common, fallbackEligible: () => false };
   const oauth = {
     name: "CLI Proxy API (CPA)",
     isSubscription: false,
@@ -219,14 +226,15 @@ function providerConfig(tier: Tier, models: ProviderModel[], apiKey: string | nu
     refreshToken,
     getApiKey,
   };
-  if (tier === "last") return { ...common, oauth, fallbackEligible: () => false };
   return { ...common, oauth };
 }
 
 function makeRefreshModels(tier: Tier): (context: RefreshModelsContext) => Promise<ProviderModel[]> {
   return async (context) => {
     const migration = readMigrationSource();
-    const apiKey = credentialApiKey(context.credential) ?? migration.apiKey;
+    const apiKey = credentialApiKey(context.credential)
+      ?? (tier === "last" ? readStoredPrimaryCredential() : null)
+      ?? migration.apiKey;
     if (!apiKey) {
       await publishBestEffort(context, { kind: "catalog-empty", tier, reason: "추론 키 없음" });
       return [];
@@ -256,6 +264,18 @@ function makeRefreshModels(tier: Tier): (context: RefreshModelsContext) => Promi
   };
 }
 
+/** Read the credential that omo stored after `/login cliproxyapi`. */
+export function readStoredPrimaryCredential(
+  path = join(homedir(), ".omo", "agent", "auth.json"),
+): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    return credentialApiKey(parsed[PROVIDER_NAME]);
+  } catch {
+    return null;
+  }
+}
+
 async function publishBestEffort(context: RefreshModelsContext, persist: unknown): Promise<void> {
   try {
     await context.publish({ persist });
@@ -273,7 +293,7 @@ export async function loadProviderData(options: {
 } = {}): Promise<ProviderData> {
   const migration = readMigrationSource();
   const apiKey = options.apiKey ?? migration.apiKey;
-  if (!apiKey) throw new Error("CPA 추론 키가 없습니다. /login local-proxy 또는 OMO_CPA_API_KEY를 설정하세요");
+  if (!apiKey) throw new Error("CPA 추론 키가 없습니다. /login cliproxyapi 또는 OMO_CPA_API_KEY를 설정하세요");
   const result = await getCatalog(DEFAULT_BASE_URL, apiKey, {
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
@@ -365,7 +385,7 @@ function credentialApiKey(credential: unknown): string | null {
 
 /** Synchronous because provider registration itself is synchronous and in-memory. */
 function readMigrationApiKeySync(): string | null {
-  return process.env["OMO_CPA_API_KEY"]?.trim() || null;
+  return process.env["OMO_CPA_API_KEY"]?.trim() || readStoredPrimaryCredential();
 }
 
 /** Kept for call-site compatibility; there is no longer a file to migrate. */

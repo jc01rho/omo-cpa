@@ -32,7 +32,7 @@ export async function main(argv: string[]): Promise<number> {
 
   const loaded = loadConfig();
   if (!loaded.apiKey) {
-    const msg = "추론 키를 찾을 수 없음 (OMO_CPA_API_KEY 또는 omo 안에서 /login local-proxy)";
+    const msg = "추론 키를 찾을 수 없음 (OMO_CPA_API_KEY 또는 omo 안에서 /login cliproxyapi)";
     console.error(asJson ? JSON.stringify({ ok: false, reason: msg }) : `오류: ${msg}`);
     return 1;
   }
