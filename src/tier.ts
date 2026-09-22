@@ -229,10 +229,10 @@ function classifyOne(m: CatalogModel, override: Tier | undefined, upstreamId?: s
     const verb = override === "primary" ? "promoted to primary" : "demoted to last-resort";
     return decide(m.id, override, known, `user override: ${verb}`, true);
   }
-  if (!isChatCapable(m)) {
-    return decide(m.id, "last", null, nonChatReason(m), false);
-  }
   const identity: CatalogModel = upstreamId === undefined ? m : { ...m, id: upstreamId, displayName: upstreamId };
+  if (!isChatCapable(identity)) {
+    return decide(m.id, "last", null, nonChatReason(identity), false);
+  }
   if (hasFreeMarker(identity)) {
     return decide(m.id, "last", null, "free / zero-cost marker", false);
   }
@@ -298,7 +298,10 @@ export function buildTierReport(
   const unfit = (d: TierDecision): boolean => {
     if (d.overridden) return false;
     const m = byId.get(d.id);
-    return m ? !isChatCapable(m) : false;
+    if (!m) return false;
+    const upstream = upstreamByAlias[d.id] ?? m.upstreamModelId;
+    const identity = upstream === undefined ? m : { ...m, id: upstream, displayName: upstream };
+    return !isChatCapable(identity);
   };
 
   return {

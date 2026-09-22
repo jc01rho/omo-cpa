@@ -226,7 +226,10 @@ describe("tier-separated provider registration", () => {
     const lastIds = new Set(last.models?.map(({ id }) => id));
     expect([...primaryIds].filter((id) => lastIds.has(id))).toEqual([]);
     expect(primaryIds.has("gpt-5.6")).toBe(true);
-    expect(lastIds.has("open-muse")).toBe(false);
+    for (const id of ["gpt-spark", "composer-2.5", "MiniMax-M3", "open-muse"]) {
+      expect(lastIds.has(id)).toBe(true);
+      expect(primaryIds.has(id)).toBe(false);
+    }
     expect(lastIds.has("cheap-model")).toBe(true);
     expect(lastIds.has("gpt-image-2")).toBe(true);
     expect(primaryIds.has("gpt-image-2")).toBe(false);
@@ -365,8 +368,12 @@ describe("declared alias tier follows upstream identity, not the alias id", () =
     expect(last.has("open-muse")).toBe(true);
   });
 
-  test("declared aliases absent from the live catalog are not synthesized", () => {
-    const { catalog } = tiersFor([aliasCatalog("gpt-5.6-sol")]);
-    expect(catalog).toEqual(new Set(["gpt-5.6-sol"]));
+  test("declared aliases absent from the catalog are still registered in their upstream tier", () => {
+    const { catalog, primary, last } = tiersFor([aliasCatalog("gpt-5.6-sol")]);
+    for (const id of ["gpt-spark", "composer-2.5", "MiniMax-M3", "open-muse"]) {
+      expect(catalog.has(id)).toBe(true);
+      expect(primary.has(id)).toBe(false);
+      expect(last.has(id)).toBe(true);
+    }
   });
 });

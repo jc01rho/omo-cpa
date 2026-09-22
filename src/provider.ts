@@ -155,12 +155,37 @@ export const DEFAULT_MAX_TOKENS = 4096;
 export const DEFAULT_MAX_TOKENS_FOR_DEFAULT_CONTEXT = 2048;
 export { DECLARED_OVERRIDES };
 
-/** Build both disjoint provider model sets from the one merged endpoint catalog. */
-export function buildProviderRegistration(data: ProviderRegistrationData): TieredProviderData {
-  const catalog = data.catalog.map((model) => {
+/**
+ * Declared aliases are callable even when absent from every listing, so they
+ * must still be registered. Their cosmetic id is not their identity: the
+ * synthesized row carries the upstream id and the classifier judges that.
+ */
+function appendDeclaredAliases(catalog: readonly CatalogModel[]): CatalogModel[] {
+  const models = catalog.map((model) => {
     const upstreamModelId = DECLARED_OVERRIDES[model.id]?.upstreamModelId;
     return upstreamModelId === undefined ? { ...model } : { ...model, upstreamModelId };
   });
+  const present = new Set(models.map(({ id }) => id));
+  for (const [id, declared] of Object.entries(DECLARED_OVERRIDES)) {
+    if (present.has(id)) continue;
+    models.push({
+      id,
+      ownedBy: null,
+      displayName: declared.upstreamModelId ?? id,
+      upstreamModelId: declared.upstreamModelId,
+      contextLength: null,
+      maxTokens: null,
+      inputModalities: declared.input.map((item) => item.toUpperCase()),
+      outputModalities: null,
+      thinking: null,
+    });
+  }
+  return models;
+}
+
+/** Build both disjoint provider model sets from the one merged endpoint catalog. */
+export function buildProviderRegistration(data: ProviderRegistrationData): TieredProviderData {
+  const catalog = appendDeclaredAliases(data.catalog);
   const report = buildTierReport(catalog, data.overrides);
   const stats: Stats = {
     realContext: 0,

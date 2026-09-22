@@ -193,7 +193,7 @@ describe("generateFallbackChains", () => {
     // shape of the live catalog where gemini/muse monopolise a flat top-14.
     for (const family of families) {
       const huge = family === "gemini" || family === "muse";
-      const count = huge ? PRIMARY_CHAIN_LIMIT : 1;
+      const count = huge ? 3 : 2;
       for (let n = 0; n < count; n++) {
         specs.push([
           `${family}-${n}`,
@@ -213,6 +213,15 @@ describe("generateFallbackChains", () => {
       expect(primarySection.some((entry) => entry.includes(`/${family}-`))).toBe(true);
     }
     expect(entries.at(-1)).toBe(`${providers.last}/junk-free`);
+    // After one seat per family the remaining budget follows capability order, so the
+    // strongest leftover (a huge-context gemini) comes before a far weaker one.
+    const geminiFirst = primarySection.indexOf(`${providers.primary}/gemini-0`);
+    const geminiNext = primarySection.indexOf(`${providers.primary}/gemini-1`);
+    expect(geminiFirst).toBeGreaterThanOrEqual(0);
+    expect(geminiNext).toBeGreaterThan(geminiFirst);
+    expect(primarySection.indexOf(`${providers.primary}/gemini-1`)).toBeLessThan(
+      primarySection.indexOf(`${providers.primary}/glm-1`),
+    );
   });
 
   test("8a. zero primaries produces a tail-only chain", () => {

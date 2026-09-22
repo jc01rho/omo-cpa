@@ -262,6 +262,14 @@ describe("classify — declared aliases use upstream identity", () => {
     expect(real.tier).toBe("primary");
     expect(real.family).toBe("gpt");
   });
+
+  test("an alias whose upstream is an image model is chat-unfit, never primary", () => {
+    const report = buildTierReport([
+      { ...model("bundle-image", { displayName: "Bundle Image" }), upstreamModelId: "gpt-image-2" },
+    ]);
+    expect(report.primary).toHaveLength(0);
+    expect(report.chatUnfit.map((d) => d.id)).toContain("bundle-image");
+  });
 });
 
 describe("classify — demotions (measured)", () => {

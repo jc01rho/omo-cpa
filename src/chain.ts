@@ -93,21 +93,13 @@ function selectPrimary(
   const chosen: string[] = [];
   const seen = new Set<string>();
   const families = [...buckets.keys()].sort();
-  let round = 0;
-  while (chosen.length < PRIMARY_CHAIN_LIMIT) {
-    let advanced = false;
-    for (const family of families) {
-      const id = buckets.get(family)?.[round];
-      if (!id || seen.has(id)) continue;
-      chosen.push(id);
-      seen.add(id);
-      advanced = true;
-      if (chosen.length >= PRIMARY_CHAIN_LIMIT) break;
-    }
-    if (!advanced) break;
-    round++;
+  for (const family of families) {
+    const id = buckets.get(family)?.[0];
+    if (!id || chosen.length >= PRIMARY_CHAIN_LIMIT) continue;
+    chosen.push(id);
+    seen.add(id);
   }
-  for (const id of none) {
+  for (const { id } of candidates) {
     if (chosen.length >= PRIMARY_CHAIN_LIMIT) break;
     if (seen.has(id)) continue;
     chosen.push(id);
