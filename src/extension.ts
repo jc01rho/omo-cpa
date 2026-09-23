@@ -6,8 +6,8 @@
  * opts out of senpi's implicit family expansion. Both refresh from the same
  * three-format catalog; `/login cliproxyapi` remains available through oauth.
  * The plugin ignores omo's model and routing configuration. It only reads the
- * oauth credential that omo stores after `/login cliproxyapi`; it never writes
- * omo-owned files itself.
+ * oauth credential that omo stores after `/login cliproxyapi`. The optional
+ * management key is stored separately in a user-only file, never in omo config.
  *
  * The existing `/cpa` report, health circuit breaker, secret redaction, and
  * fail-open handlers are preserved. Declared overrides only enrich models that
@@ -46,6 +46,7 @@ import {
   toOverrideMap,
 } from "./tier.ts";
 import { loadConfig } from "./config.ts";
+import { clearManagementKey, MANAGEMENT_KEY_FILE, readManagementKey, saveManagementKey } from "./management-key.ts";
 import { HealthTracker } from "./health.ts";
 import { fetchUsage } from "./usage.ts";
 import { renderReport, renderStatusLine } from "./render.ts";
@@ -68,6 +69,7 @@ interface State {
 
 export interface OmoCpaOptions {
   overridePath?: string;
+  managementKeyPath?: string;
   loadProviderData?: (force?: boolean) => Promise<ProviderData>;
 }
 
@@ -102,7 +104,7 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
   async function refresh(force = false): Promise<void> {
     try {
       const stored = readStoredPrimaryConnection();
-      const loaded = loadConfig(stored?.apiKey, stored?.baseUrl);
+      const loaded = loadConfig(stored?.apiKey, stored?.baseUrl, managementKeyPath);
       state.config = loaded.config;
       state.apiKey = loaded.apiKey;
       state.managementKey = loaded.managementKey;
@@ -176,6 +178,7 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
   });
 
   const overridePath = options.overridePath ?? OVERRIDES_FILE;
+  const managementKeyPath = options.managementKeyPath;
   const providerDataLoader = options.loadProviderData
     ?? ((force?: boolean) => loadProviderData(force ? { force: true } : {}));
 
@@ -274,12 +277,91 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
     notify(ctx, `CPA fallback chain ${chains.length}개를 명시적으로 적용했습니다`, "info");
   }
 
+  async function handleManagementCommand(action: string | undefined, ctx: any): Promise<void> {
+    if (action === undefined || action === "status") {
+      const configured = !!(process.env["OMO_CPA_MANAGEMENT_KEY"]?.trim() || readManagementKey(managementKeyPath));
+      notify(ctx, `Management Key ${configured ? "설정됨" : "미설정"}${configured ? "" : " · /cpa management set 으로 등록"}`);
+      return;
+    }
+    if (action === "set") {
+      if (ctx?.hasUI !== true || typeof ctx?.ui?.input !== "function") {
+        notify(ctx, "이 모드에서는 비밀 입력 UI를 사용할 수 없습니다. OMO_CPA_MANAGEMENT_KEY 환경변수를 설정하세요.", "error");
+        return;
+      }
+      const key = await ctx.ui.input("CPA Management Key 입력", "입력 중 화면에 표시될 수 있습니다");
+      if (key === undefined) {
+        notify(ctx, "Management Key 입력을 취소했습니다");
+        return;
+      }
+      if (!key.trim()) {
+        notify(ctx, "Management Key가 비어 있습니다. 기존 키는 유지했습니다.", "warning");
+        return;
+      }
+      try {
+        saveManagementKey(key, managementKeyPath);
+        const loaded = loadConfig(state.apiKey, state.config?.root, managementKeyPath);
+        state.managementKey = loaded.managementKey;
+        state.config = loaded.config;
+        notify(ctx, "Management Key를 사용자 전용 파일(0600)에 저장했습니다. 파일은 암호화되지 않습니다.");
+      } catch (e) {
+        notify(ctx, `Management Key 저장 실패: ${redact((e as Error).message)}`, "error");
+      }
+      return;
+    }
+    if (action === "clear") {
+      if (process.env["OMO_CPA_MANAGEMENT_KEY"]?.trim()) {
+        notify(ctx, "환경변수 OMO_CPA_MANAGEMENT_KEY가 우선 적용 중입니다. 환경변수를 제거한 뒤 파일 키를 초기화하세요.", "warning");
+        return;
+      }
+      try {
+        clearManagementKey(managementKeyPath);
+        const loaded = loadConfig(state.apiKey, state.config?.root, managementKeyPath);
+        state.managementKey = loaded.managementKey;
+        state.config = loaded.config;
+        notify(ctx, "저장된 Management Key를 삭제했습니다");
+      } catch (e) {
+        notify(ctx, `Management Key 삭제 실패: ${redact((e as Error).message)}`, "error");
+      }
+      return;
+    }
+    notify(ctx, `알 수 없는 management 하위 명령 "${action}". 사용법: /cpa management [status|set|clear]`, "warning");
+  }
+
+  function showHelp(): void {
+    sendBlock([
+      "/cpa 명령 도움말",
+      "/cpa                         상태·tier·fallback chain·사용량 리포트",
+      "/cpa help                    이 도움말",
+      "/cpa refresh                 상태와 모델 카탈로그 새로고침",
+      "/cpa management [status]     Management Key 설정 상태 확인",
+      "/cpa management set          입력창에서 키 저장 (타이핑은 화면에 표시될 수 있음)",
+      "/cpa management clear        저장한 키 삭제",
+      "/cpa tier                    모델 tier와 override 목록",
+      "/cpa tier promote <model-id> 주력 tier로 지정",
+      "/cpa tier demote <model-id>  최후 fallback tier로 지정",
+      "/cpa tier reset <model-id>   수동 tier 지정 해제",
+      "/cpa chains                  fallback chain 미리보기",
+      "/cpa chains apply            현재 세션에 fallback chain 적용",
+      "",
+      `키는 ${managementKeyPath ?? MANAGEMENT_KEY_FILE} 에 암호화 없이 사용자 전용 권한(0600)으로 저장됩니다.`,
+      "OMO_CPA_MANAGEMENT_KEY 환경변수가 저장된 키보다 우선합니다.",
+    ].join("\n"), "omo-cpa-help");
+  }
+
   pi.registerCommand("cpa", {
     description: "CPA 상태·tier·fallback chain·계정 사용량 점검",
-    argumentHint: "[refresh|tier ...|chains [apply]]",
+    argumentHint: "[help|refresh|management [status|set|clear]|tier [promote|demote|reset] <model-id>|chains [apply]]",
     handler: async (args: string, ctx: any) => {
       try {
         const words = args.trim().split(/\s+/).filter(Boolean);
+        if (words[0] === "help" || words[0] === "--help" || words[0] === "-h") {
+          showHelp();
+          return;
+        }
+        if (words[0] === "management") {
+          await handleManagementCommand(words[1], ctx);
+          return;
+        }
         const tierCommand = parseTierCommand(words);
         if (tierCommand) {
           await handleTierCommand(tierCommand, ctx);
@@ -287,6 +369,10 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
         }
         if (words[0] === "chains") {
           await handleChainsCommand(words, ctx);
+          return;
+        }
+        if (words.length > 0 && words[0] !== "refresh") {
+          notify(ctx, `알 수 없는 하위 명령 "${words[0]}". /cpa help 에서 지원 인자를 확인하세요.`, "warning");
           return;
         }
 

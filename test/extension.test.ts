@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import omoCpa from "../src/extension.ts";
 import { loadOverrideStore } from "../src/tier.ts";
+import { MANAGEMENT_KEY_FILE, readManagementKey } from "../src/management-key.ts";
 import type { ProviderConfig } from "../src/provider.ts";
 import type { CatalogModel } from "../src/tier-types.ts";
 
@@ -50,6 +51,7 @@ describe("extension registration", () => {
       expect(handlers.has(evt)).toBe(true);
     }
     expect(commands.has("cpa")).toBe(true);
+    expect(commands.get("cpa").argumentHint).toContain("management [status|set|clear]");
   });
 });
 
@@ -80,6 +82,52 @@ describe("/cpa tier", () => {
     expect(listing).toContain("cheap-model → primary");
     expect(listing).toContain("비활성 override");
     expect(listing).toContain("temporarily-absent → primary");
+  });
+});
+
+describe("/cpa management and help", () => {
+  test("shows all command arguments from /cpa help", async () => {
+    const { pi, ctx, commands, messages } = mockPi();
+    omoCpa(pi);
+    await commands.get("cpa").handler("help", ctx);
+    const help = messages.at(-1) as { content: string; customType: string; display: string };
+    expect(help).toMatchObject({ customType: "omo-cpa-help", display: "block" });
+    expect(help.content).toContain("/cpa management set");
+    expect(help.content).toContain("/cpa tier promote <model-id>");
+    expect(help.content).toContain("/cpa chains apply");
+    expect(help.content).toContain(MANAGEMENT_KEY_FILE);
+  });
+
+  test("securely stores, reports and clears the management key", async () => {
+    const dir = join(tmpdir(), `omo-cpa-key-${crypto.randomUUID()}`);
+    tempPaths.push(dir);
+    const keyPath = join(dir, "management-key");
+    const { pi, ctx, commands, notes } = mockPi();
+    const previousEnv = process.env["OMO_CPA_MANAGEMENT_KEY"];
+    delete process.env["OMO_CPA_MANAGEMENT_KEY"];
+    const promptedCtx = {
+      ...ctx,
+      hasUI: true,
+      ui: {
+        ...ctx.ui,
+        input: async () => "  secret-management-key  ",
+      },
+    };
+    omoCpa(pi, { managementKeyPath: keyPath });
+    const command = commands.get("cpa");
+    try {
+      await command.handler("management set", promptedCtx);
+      expect(readManagementKey(keyPath)).toBe("secret-management-key");
+      expect((await Bun.file(keyPath).stat()).mode & 0o777).toBe(0o600);
+      expect(notes.at(-1)?.level).toBe("info");
+
+      await command.handler("management status", ctx);
+      expect(notes.at(-1)?.level).toBe("info");
+      await command.handler("management clear", ctx);
+      expect(readManagementKey(keyPath)).toBeNull();
+    } finally {
+      if (previousEnv !== undefined) process.env["OMO_CPA_MANAGEMENT_KEY"] = previousEnv;
+    }
   });
 });
 

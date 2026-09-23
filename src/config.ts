@@ -1,10 +1,11 @@
 import type { CpaConfig } from "./types.ts";
+import { MANAGEMENT_KEY_FILE, readManagementKey } from "./management-key.ts";
 
 /**
  * The CPA endpoint. The plugin owns its own models through `registerProvider`,
- * so it reads none of omo's configuration files: the tier split is derived from
- * the live catalog, and the key arrives from `/login` through the oauth
- * credential or from the environment for the standalone CLI.
+ * so it reads none of omo's routing configuration: the tier split is derived
+ * from the live catalog, and the inference key arrives from `/login` or the
+ * environment. The management key may also be read from its separate secret file.
  */
 export const DEFAULT_BASE_URL = "http://127.0.0.1:8317";
 
@@ -22,16 +23,17 @@ export interface LoadedConfig {
 }
 
 /**
- * Resolve the endpoint and keys from the environment alone. An absent key is
- * not an error here: the extension receives one from its oauth credential.
+ * Resolve endpoint and keys. An absent inference key is not an error here: the
+ * extension receives one from its oauth credential.
  */
 export function loadConfig(
   apiKeyOverride?: string | null,
   baseUrlOverride?: string | null,
+  managementKeyPath = MANAGEMENT_KEY_FILE,
 ): LoadedConfig {
   const root = toRoot(baseUrlOverride?.trim() || process.env["OMO_CPA_BASE_URL"]?.trim() || DEFAULT_BASE_URL);
   const apiKey = apiKeyOverride?.trim() || process.env["OMO_CPA_API_KEY"]?.trim() || null;
-  const managementKey = process.env["OMO_CPA_MANAGEMENT_KEY"]?.trim() || null;
+  const managementKey = process.env["OMO_CPA_MANAGEMENT_KEY"]?.trim() || readManagementKey(managementKeyPath);
 
   return {
     config: { root, providers: [], source: "env", hasApiKey: !!apiKey, hasManagementKey: !!managementKey },

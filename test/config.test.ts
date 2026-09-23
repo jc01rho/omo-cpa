@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { loadConfig, toRoot, DEFAULT_BASE_URL } from "../src/config.ts";
 
@@ -26,7 +29,7 @@ describe("loadConfig — independent of omo's own config files", () => {
   }
 
   test("falls back to the built-in endpoint with no env and no files", () => {
-    const loaded = withEnv({}, () => loadConfig());
+    const loaded = withEnv({}, () => loadConfig(null, null, join(tmpdir(), `missing-${crypto.randomUUID()}`)));
     expect(loaded.config?.root).toBe(DEFAULT_BASE_URL);
     expect(loaded.apiKey).toBeNull();
     // An absent key is reported, never invented, and never fatal here.
@@ -54,6 +57,20 @@ describe("loadConfig — independent of omo's own config files", () => {
       () => loadConfig("from-login", "http://login.example:8317/v1"),
     );
     expect(loaded.config?.root).toBe("http://login.example:8317");
+  });
+
+  test("loads the persisted management key when env is unset and env takes precedence", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "omo-cpa-config-"));
+    const keyPath = join(dir, "key");
+    await writeFile(keyPath, "stored-key\n", { mode: 0o600 });
+    try {
+      const loaded = withEnv({}, () => loadConfig(null, null, keyPath));
+      expect(loaded.managementKey).toBe("stored-key");
+      const overridden = withEnv({ OMO_CPA_MANAGEMENT_KEY: "env-key" }, () => loadConfig(null, null, keyPath));
+      expect(overridden.managementKey).toBe("env-key");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   test("the config module names no omo-owned file", async () => {
