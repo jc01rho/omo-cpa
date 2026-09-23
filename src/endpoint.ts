@@ -1,12 +1,14 @@
 import type { CatalogModel, Endpoint } from "./tier-types.ts";
 
+type CatalogListEndpoint = Endpoint | "codex";
+
 const ANTHROPIC_BUG_PREFIX = "claude-fable-5-dd-";
 const ANTHROPIC_VERSION = "2023-06-01";
 const MAX_SANE_OUTPUT_TOKENS = 250_000;
 
 export interface CatalogIssue {
   kind: "discarded-metadata" | "metadata-disagreement" | "max-tokens-clamped";
-  endpoint: Endpoint;
+  endpoint: CatalogListEndpoint;
   modelId: string;
   field?: "contextLength" | "maxTokens";
   values?: number[];
@@ -32,13 +34,13 @@ export type CatalogFetchResult =
       ok: true;
       models: CatalogModel[];
       issues: CatalogIssue[];
-      failures: Partial<Record<Endpoint, string>>;
+      failures: Partial<Record<CatalogListEndpoint, string>>;
     }
   | {
       ok: false;
       reason: string;
       models: null;
-      failures: Partial<Record<Endpoint, string>>;
+      failures: Partial<Record<CatalogListEndpoint, string>>;
     };
 
 export interface FetchCatalogOptions {
@@ -75,6 +77,7 @@ export function mergeCatalogs(
   openaiResponse: unknown,
   anthropicResponse: unknown = null,
   geminiResponse: unknown = null,
+  codexResponse: unknown = null,
 ): CatalogMergeResult {
   const issues: CatalogIssue[] = [];
   const models: CatalogModel[] = [];
@@ -158,6 +161,18 @@ export function mergeCatalogs(
     model.outputModalities = stringArrayAt(record, "supportedOutputModalities");
   }
 
+  // Codex exposes the maximum window under `models[].slug`, not `data[].id`.
+  // It enriches only IDs already present in the canonical OpenAI list.
+  for (const record of recordsAt(codexResponse, "models")) {
+    const id = stringAt(record, "slug");
+    if (!id) continue;
+    const model = byId.get(id);
+    if (!model) continue;
+    model.contextLength = readRecordContextLength(id, "codex", record, issues) ?? model.contextLength;
+    model.maxTokens = numberAt(record, "max_tokens") ?? model.maxTokens;
+    clampOutputLimit(model, issues, "codex");
+  }
+
   return { models, issues };
 }
 
@@ -177,7 +192,7 @@ export function selectEndpoint(model: CatalogModel): EndpointSelection {
   return { endpoint: "openai", baseUrlSuffix: "/v1", headers: {} };
 }
 
-/** Fetch the three list formats concurrently; OpenAI is the required identity source. */
+/** Fetch the four list formats concurrently; OpenAI is the required identity source. */
 export async function fetchCatalog(
   root: string,
   apiKey: string,
@@ -187,10 +202,11 @@ export async function fetchCatalog(
   const timeoutMs = options.timeoutMs ?? 10_000;
   const base = root.replace(/\/+$/, "");
 
-  const [openai, anthropic, gemini] = await Promise.all([
+  const [openai, anthropic, gemini, codex] = await Promise.all([
     fetchList(fetchImpl, `${base}/v1/models`, apiKey, "openai", timeoutMs),
     fetchList(fetchImpl, `${base}/v1/models`, apiKey, "anthropic", timeoutMs),
     fetchList(fetchImpl, `${base}/v1beta/models`, apiKey, "gemini", timeoutMs),
+    fetchList(fetchImpl, `${base}/v1/models?client_version=cpa`, apiKey, "codex", timeoutMs),
   ]);
 
   if (!openai.ok) {
@@ -202,14 +218,16 @@ export async function fetchCatalog(
     };
   }
 
-  const failures: Partial<Record<Endpoint, string>> = {};
+  const failures: Partial<Record<CatalogListEndpoint, string>> = {};
   if (!anthropic.ok) failures.anthropic = anthropic.reason;
   if (!gemini.ok) failures.gemini = gemini.reason;
+  if (!codex.ok) failures.codex = codex.reason;
 
   const merged = mergeCatalogs(
     openai.body,
     anthropic.ok ? anthropic.body : null,
     gemini.ok ? gemini.body : null,
+    codex.ok ? codex.body : null,
   );
   if (merged.models.length === 0) {
     const reason = "openai model list contained no valid model ids";
@@ -230,7 +248,7 @@ function hasFamily(identity: string, family: "claude" | "gemini"): boolean {
  */
 function readRecordContextLength(
   modelId: string,
-  endpoint: Endpoint,
+  endpoint: CatalogListEndpoint,
   record: Record<string, unknown>,
   issues: CatalogIssue[],
 ): number | null {
@@ -251,7 +269,7 @@ function chooseSaferLimit(
   field: "contextLength" | "maxTokens",
   candidates: Array<number | null>,
   issues: CatalogIssue[],
-  endpoint: Endpoint = "anthropic",
+  endpoint: CatalogListEndpoint = "anthropic",
 ): number | null {
   const values = [...new Set(candidates.filter((value): value is number => value !== null))];
   if (values.length === 0) return null;
@@ -270,7 +288,7 @@ function chooseSaferLimit(
   return chosen;
 }
 
-function clampOutputLimit(model: CatalogModel, issues: CatalogIssue[]): void {
+function clampOutputLimit(model: CatalogModel, issues: CatalogIssue[], endpoint: CatalogListEndpoint = "anthropic"): void {
   if (model.maxTokens === null || model.contextLength === null || model.maxTokens < model.contextLength) return;
 
   const from = model.maxTokens;
@@ -281,7 +299,7 @@ function clampOutputLimit(model: CatalogModel, issues: CatalogIssue[]): void {
   model.maxTokens = to !== null && to < model.contextLength ? to : null;
   issues.push({
     kind: "max-tokens-clamped",
-    endpoint: "anthropic",
+    endpoint,
     modelId: model.id,
     field: "maxTokens",
     from,
@@ -298,7 +316,7 @@ async function fetchList(
   fetchImpl: typeof fetch,
   url: string,
   apiKey: string,
-  endpoint: Endpoint,
+  endpoint: CatalogListEndpoint,
   timeoutMs: number,
 ): Promise<ListFetchResult> {
   const headers: Record<string, string> = { Authorization: `Bearer ${apiKey}` };
@@ -325,7 +343,7 @@ async function fetchList(
     return { ok: false, reason: `${endpoint} model list returned invalid JSON (${errorMessage(error)})` };
   }
 
-  const listKey = endpoint === "gemini" ? "models" : "data";
+  const listKey = endpoint === "gemini" || endpoint === "codex" ? "models" : "data";
   if (recordsAt(body, listKey).length === 0) {
     return { ok: false, reason: `${endpoint} model list response has no ${listKey} records` };
   }

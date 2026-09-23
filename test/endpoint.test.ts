@@ -251,7 +251,35 @@ describe("selectEndpoint", () => {
 });
 
 describe("fetchCatalog", () => {
-  test("starts all three list requests concurrently and merges successful responses", async () => {
+  test("reads Codex max_context_window for an existing OpenAI model", async () => {
+    const urls: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = String(input);
+      urls.push(url);
+      if (url.endsWith("?client_version=cpa")) return json({
+        models: [
+          { slug: "gpt-6-sol", context_window: 272_000, max_context_window: 872_000, max_tokens: 128_000 },
+          { slug: "codex-only", max_context_window: 1_050_000 },
+        ],
+      });
+      if (url.includes("/v1beta/")) return json(geminiList());
+      if (url.endsWith("/v1/models")) return json(openaiList({ id: "gpt-6-sol" }));
+      return json(anthropicList({ id: "gpt-6-sol", context_length: 272_000, max_tokens: 128_000 }));
+    }) as typeof fetch;
+
+    const result = await fetchCatalog("http://cpa.test", "secret", { fetchImpl });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    expect(urls).toContain("http://cpa.test/v1/models?client_version=cpa");
+    expect(result.models).toHaveLength(1);
+    expect(result.models[0]).toMatchObject({
+      id: "gpt-6-sol",
+      contextLength: 872_000,
+      maxTokens: 128_000,
+    });
+  });
+
+  test("starts all four list requests concurrently and merges successful responses", async () => {
     const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
     const resolvers: Array<(response: Response) => void> = [];
     const fetchImpl = ((input: string | URL | Request, init?: RequestInit) => {
@@ -261,13 +289,14 @@ describe("fetchCatalog", () => {
 
     const pending = fetchCatalog("http://cpa.test/", "secret", { fetchImpl });
     await Promise.resolve();
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
 
     const openaiCall = calls.findIndex((call) =>
       call.url.endsWith("/v1/models") && !new Headers(call.init?.headers).has("anthropic-version"));
     const anthropicCall = calls.findIndex((call) =>
       new Headers(call.init?.headers).get("anthropic-version") === "2023-06-01");
     const geminiCall = calls.findIndex((call) => call.url.endsWith("/v1beta/models"));
+    const codexCall = calls.findIndex((call) => call.url.endsWith("/v1/models?client_version=cpa"));
     resolveCall(resolvers, openaiCall, json(openaiList({ id: "gemini-pro" })));
     resolveCall(resolvers, anthropicCall, json(anthropicList({
       id: "claude-fable-5-dd-orp-inimeg",
@@ -277,6 +306,7 @@ describe("fetchCatalog", () => {
       name: "models/gemini-pro",
       supportedInputModalities: ["TEXT"],
     })));
+    resolveCall(resolvers, codexCall, json({ models: [{ slug: "codex-unlisted" }] }));
 
     const result = await pending;
     expect(result.ok).toBe(true);
@@ -299,6 +329,16 @@ describe("fetchCatalog", () => {
     expect(result.models[0]?.contextLength).toBeNull();
     expect(result.failures.anthropic).toContain("HTTP 503");
     expect(result.failures.gemini).toBeUndefined();
+  });
+
+  test("uses Anthropic limits when the optional Codex list fails", async () => {
+    const result = await fetchCatalog("http://cpa.test", "secret", {
+      fetchImpl: fixtureFetch({ codexStatus: 503 }),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.models[0]?.contextLength).toBe(100_000);
+    expect(result.failures.codex).toContain("HTTP 503");
   });
 
   test("returns the OpenAI catalog when only Gemini fails, recording why", async () => {
@@ -353,10 +393,15 @@ function fixtureFetch(statuses: {
   openaiStatus?: number;
   anthropicStatus?: number;
   geminiStatus?: number;
+  codexStatus?: number;
 }): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     const headers = new Headers(init?.headers);
+    if (url.endsWith("?client_version=cpa")) {
+      const status = statuses.codexStatus ?? 200;
+      return status === 200 ? json({ models: [{ slug: "codex-unlisted" }] }) : json({ error: "codex unavailable" }, status);
+    }
     if (url.endsWith("/v1beta/models")) {
       const status = statuses.geminiStatus ?? 200;
       return status === 200

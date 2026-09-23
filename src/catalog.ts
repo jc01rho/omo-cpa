@@ -3,8 +3,8 @@
  *
  * Two providers are registered (primary and last-resort) and each one owns a
  * `refreshModels`, while `/cpa` can ask for the catalog too. Every uncached
- * call fans out to three list endpoints, so without this layer one refresh
- * round produced six or more `/v1/models` requests against the CPA server.
+ * call fans out to four list endpoints, so without this layer one refresh
+ * round produced eight or more list requests against the CPA server.
  *
  * The cache is process-wide and does two things:
  *  - serves a result younger than the TTL without touching the network
