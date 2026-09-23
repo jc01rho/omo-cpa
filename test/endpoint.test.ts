@@ -160,6 +160,62 @@ describe("mergeCatalogs", () => {
   });
 });
 
+// ---------- maximum context window preference ----------
+
+describe("maximum context window preference", () => {
+  test("uses max_context_window when the identity record exposes both windows", () => {
+    const result = mergeCatalogs(
+      openaiList({
+        id: "gpt-6-sol",
+        owned_by: "openai",
+        context_window: 272_000,
+        max_context_window: 872_000,
+        max_tokens: 128_000,
+      }),
+      null,
+      null,
+    );
+
+    expect(result.models[0]?.contextLength).toBe(872_000);
+    expect(result.models[0]?.maxTokens).toBe(128_000);
+  });
+
+  test("uses max_context_window from the Anthropic enrichment record", () => {
+    const result = mergeCatalogs(
+      openaiList({ id: "gpt-6-sol" }),
+      anthropicList({
+        id: "claude-fable-5-dd-los-6-tpg",
+        context_window: 272_000,
+        max_context_window: 872_000,
+      }),
+      null,
+    );
+
+    expect(result.models[0]?.contextLength).toBe(872_000);
+  });
+
+  test("falls back to context_window when the explicit maximum is absent", () => {
+    const result = mergeCatalogs(
+      openaiList({ id: "plain" }),
+      anthropicList({ id: "claude-fable-5-dd-nialp", context_window: 272_000 }),
+      null,
+    );
+
+    expect(result.models[0]?.contextLength).toBe(272_000);
+  });
+
+  test("keeps the window reported by the endpoint that has one", () => {
+    const result = mergeCatalogs(
+      openaiList({ id: "plain", context_window: 272_000 }),
+      anthropicList({ id: "claude-fable-5-dd-nialp", display_name: "Plain" }),
+      null,
+    );
+
+    expect(result.models[0]?.contextLength).toBe(272_000);
+    expect(result.models[0]?.displayName).toBe("Plain");
+  });
+});
+
 describe("selectEndpoint", () => {
   test("routes a Claude model through Anthropic with its required header", () => {
     expect(selectEndpoint(catalogModel("claude-3-7-sonnet"))).toEqual({

@@ -97,6 +97,16 @@ export function mergeCatalogs(
     };
     byId.set(id, model);
     models.push(model);
+
+    // CPA can enrich the identity record itself with window and output limits.
+    model.contextLength = readRecordContextLength(id, "openai", record, issues);
+    model.maxTokens = chooseSaferLimit(
+      id,
+      "maxTokens",
+      [numberAt(record, "max_tokens"), numberAt(record, "max_completion_tokens")],
+      issues,
+      "openai",
+    );
   }
 
   for (const record of recordsAt(anthropicResponse, "data")) {
@@ -115,17 +125,14 @@ export function mergeCatalogs(
     }
 
     model.displayName = stringAt(record, "display_name") ?? model.displayName;
-    model.contextLength = chooseSaferLimit(
-      id,
-      "contextLength",
-      [numberAt(record, "context_length"), numberAt(record, "max_input_tokens")],
-      issues,
-    );
+    const enrichedContextLength = readRecordContextLength(id, "anthropic", record, issues);
+    if (enrichedContextLength !== null) model.contextLength = enrichedContextLength;
     model.maxTokens = chooseSaferLimit(
       id,
       "maxTokens",
       [numberAt(record, "max_tokens"), numberAt(record, "max_completion_tokens")],
       issues,
+      "anthropic",
     );
     model.thinking = booleanAt(record, "thinking") ?? booleanAt(record, "extended_thinking");
     clampOutputLimit(model, issues);
@@ -216,11 +223,35 @@ function hasFamily(identity: string, family: "claude" | "gemini"): boolean {
   return new RegExp(`(^|[/_.\\s-])${family}(?=$|[/_.\\s-])`).test(identity);
 }
 
+/**
+ * Read a model's context window from one list record. An explicit
+ * `max_context_window` is the provider's authoritative ceiling and wins over
+ * any coexisting `context_window`, `context_length`, or `max_input_tokens`.
+ */
+function readRecordContextLength(
+  modelId: string,
+  endpoint: Endpoint,
+  record: Record<string, unknown>,
+  issues: CatalogIssue[],
+): number | null {
+  const explicitMaximum = numberAt(record, "max_context_window");
+  const candidates = [
+    numberAt(record, "context_window"),
+    numberAt(record, "context_length"),
+    numberAt(record, "max_input_tokens"),
+  ];
+  if (explicitMaximum === null) {
+    return chooseSaferLimit(modelId, "contextLength", candidates, issues, endpoint);
+  }
+  return explicitMaximum;
+}
+
 function chooseSaferLimit(
   modelId: string,
   field: "contextLength" | "maxTokens",
   candidates: Array<number | null>,
   issues: CatalogIssue[],
+  endpoint: Endpoint = "anthropic",
 ): number | null {
   const values = [...new Set(candidates.filter((value): value is number => value !== null))];
   if (values.length === 0) return null;
@@ -228,7 +259,7 @@ function chooseSaferLimit(
   if (values.length > 1) {
     issues.push({
       kind: "metadata-disagreement",
-      endpoint: "anthropic",
+      endpoint,
       modelId,
       field,
       values,
