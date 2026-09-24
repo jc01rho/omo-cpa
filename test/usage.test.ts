@@ -159,6 +159,19 @@ describe("parseAuthFiles", () => {
     expect(account!.detail).toBe("refresh failed");
   });
 
+  test("the server's error status is an error even with no message", () => {
+    // reconcileAuthFileCooldownState returns StatusError with an empty
+    // status_message for a persistent auth failure.
+    const [account] = parseAuthFiles([{ ...emptyQuotaFile, status: "error", status_message: "" }])!;
+    expect(account!.status).toBe("error");
+  });
+
+  test("a disabled credential is not also called an error", () => {
+    const [account] = parseAuthFiles([{ ...disabledFile, status_message: "ignored" }])!;
+    expect(account!.status).toBe("off");
+    expect(account!.detail).toBeNull();
+  });
+
   test("unknown values never surface as a percentage", () => {
     const [account] = parseAuthFiles([
       { ...emptyQuotaFile, quota: { signals: { "X-Codex-Primary-Used-Percent": "not-a-number" } } },
@@ -399,6 +412,12 @@ describe("renderReport usage section", () => {
     const out = render({ supported: true, accounts: parseAuthFiles([disabledFile])!, observedAt: null });
     expect(out).toContain("비활성");
     expect(out).not.toContain("오류");
+  });
+
+  test("the server's error status renders as an error row", () => {
+    const [account] = parseAuthFiles([{ ...emptyQuotaFile, status: "error", status_message: "" }])!;
+    const out = render({ supported: true, accounts: [account!], observedAt: null });
+    expect(out).toContain("오류");
   });
 
   test("model-scoped watermarks render when the account has none", () => {

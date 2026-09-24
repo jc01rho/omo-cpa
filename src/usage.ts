@@ -79,15 +79,15 @@ export function parseAuthFiles(body: unknown): UsageAccount[] | null {
     if (!item || typeof item !== "object") continue;
     const rec = item as Record<string, unknown>;
     const signals = signalMap(rec["quota"]);
-    // `status` is the API's own verdict ("active"/"disabled"); status_message is
-    // empty for a healthy credential, so a non-empty one is the error detail.
-    const disabled = rec["disabled"] === true || rec["unavailable"] === true ||
-      (str(rec["status"]) ?? "").toLowerCase() === "disabled";
+    // The server reports `active`, `disabled`, or `error`. `status_message` is
+    // empty for healthy credentials, so any non-empty one is the error detail.
+    const status = (str(rec["status"]) ?? "").toLowerCase();
+    const disabled = rec["disabled"] === true || rec["unavailable"] === true || status === "disabled";
     const detail = disabled ? null : str(rec["status_message"]);
     out.push({
       provider: str(rec["provider"]) ?? str(rec["type"]) ?? "unknown",
       label: str(rec["label"]) ?? str(rec["email"]) ?? str(rec["account"]) ?? str(rec["name"]) ?? "(이름 없음)",
-      status: disabled ? "off" : detail ? "error" : "ok",
+      status: disabled ? "off" : status === "error" || detail ? "error" : "ok",
       detail,
       meta: accountMeta(signals),
       windows: deriveWindows(signals),
