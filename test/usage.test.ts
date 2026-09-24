@@ -261,6 +261,49 @@ describe("deriveWindows", () => {
     expect(window!.resetsAt).toBeLessThan(before + 601_000);
   });
 
+  test("covers every window name the server can emit", () => {
+    // Taken from the server's own header vocabulary (helps/claude_ratelimit.go).
+    const windows = deriveWindows({
+      "Anthropic-Ratelimit-Unified-5h-Utilization": "0.10",
+      "Anthropic-Ratelimit-Unified-5h-Reset": "1790310427",
+      "Anthropic-Ratelimit-Unified-5h-Status": "allowed",
+      "Anthropic-Ratelimit-Unified-7d-Utilization": "0.20",
+      "Anthropic-Ratelimit-Unified-7d-Status": "allowed",
+      "Anthropic-Ratelimit-Unified-7d_oi-Utilization": "0.30",
+      "Anthropic-Ratelimit-Unified-Overage-Utilization": "0.43",
+      "Anthropic-Ratelimit-Unified-Overage-Status": "allowed",
+      "Anthropic-Ratelimit-Unified-Status": "allowed",
+      "Anthropic-Ratelimit-Unified-Representative-Claim": "overage",
+    });
+    expect(windows.map((w) => [w.label, w.remainingPercent])).toEqual([
+      ["5시간", 90],
+      ["7일", 80],
+      ["7일(추가)", 70],
+      ["overage", 57],
+    ]);
+  });
+
+  test("an account-wide Status signal does not become a window of its own", () => {
+    // Anthropic sends a bare -Status/-Reset alongside the per-window ones.
+    expect(deriveWindows({
+      "Anthropic-Ratelimit-Unified-Reset": "1790310427",
+      "Anthropic-Ratelimit-Unified-Status": "allowed",
+    })).toEqual([]);
+  });
+
+  test("a rejected 7d_oi window is exhausted while 5h stays usable", () => {
+    const windows = deriveWindows({
+      "Anthropic-Ratelimit-Unified-7d_oi-Utilization": "0.30",
+      "Anthropic-Ratelimit-Unified-7d_oi-Status": "rejected",
+      "Anthropic-Ratelimit-Unified-5h-Utilization": "0.10",
+      "Anthropic-Ratelimit-Unified-5h-Status": "allowed",
+    });
+    expect(windows.map((w) => [w.label, w.remainingPercent, w.note])).toEqual([
+      ["7일(추가)", 0, "한도 도달"],
+      ["5시간", 90, null],
+    ]);
+  });
+
   test("a namespaced extra limit is labelled by its limit name", () => {
     const windows = deriveWindows({
       "X-Codex-Additional-Bengalfox-Limit-Name": "Spark",
