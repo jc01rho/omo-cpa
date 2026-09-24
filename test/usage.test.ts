@@ -355,6 +355,12 @@ describe("deriveWindows", () => {
       "X-Codex-Primary-Window-Minutes": "10080",
       "X-Codex-Primary-Limit-Reached": "true",
     })[0]).toEqual({ label: "7일", remainingPercent: 0, resetsAt: null, note: "한도 도달" });
+    // allowed=false is Codex's "this credential may not serve".
+    expect(deriveWindows({
+      "X-Codex-Primary-Used-Percent": "5",
+      "X-Codex-Primary-Window-Minutes": "60",
+      "X-Codex-Primary-Allowed": "false",
+    })[0]).toEqual({ label: "1시간", remainingPercent: 0, resetsAt: null, note: "한도 도달" });
   });
 
   test("healthy rejection-shaped signals stay healthy", () => {
@@ -368,6 +374,17 @@ describe("deriveWindows", () => {
       "X-Codex-Primary-Window-Minutes": "10080",
       "X-Codex-Primary-Allowed": "true",
     })[0]!.remainingPercent).toBe(61);
+    // The server writes Codex booleans as literal true/false, so false must not
+    // be read as a refusal. Case is not guaranteed either (Credits-Has-Credits is "False").
+    expect(deriveWindows({
+      "X-Codex-Primary-Used-Percent": "5",
+      "X-Codex-Primary-Window-Minutes": "60",
+      "X-Codex-Primary-Limit-Reached": "false",
+    })[0]!.remainingPercent).toBe(95);
+    expect(deriveWindows({
+      "Anthropic-Ratelimit-Unified-5h-Utilization": "0.5",
+      "Anthropic-Ratelimit-Unified-5h-Status": "ALLOWED",
+    })[0]!.remainingPercent).toBe(50);
     // An empty disabled-reason is the absence of a reason.
     expect(deriveWindows({
       "Anthropic-Ratelimit-Unified-Overage-Utilization": "0.43",

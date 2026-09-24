@@ -292,14 +292,16 @@ function blankGroup(): { remaining: number | null; minutes: number | null; absol
 
 /**
  * Whether a rejection-shaped field actually says "refused".
- * A status of "allowed"/"allowed_warning" and `allowed: true` are healthy, and
- * an empty reason string is not a reason.
+ * `status` uses "allowed*" for healthy; the boolean flags carry an explicit
+ * true/false, so `limit-reached=false` means the window is fine; and an empty
+ * disabled-reason is the absence of a reason.
  */
 function isWindowRejected(field: WindowField, value: string): boolean {
   const text = value.trim().toLowerCase();
   if (text === "") return false;
   if (field === "status") return !text.startsWith("allowed");
   if (field === "allowed") return text === "false" || text === "0" || text === "no";
+  if (field === "limit-reached") return text === "true" || text === "1" || text === "yes";
   return true;
 }
 
