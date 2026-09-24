@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { deriveWindows, fetchUsage, parseAuthFiles } from "../src/usage.ts";
-import { renderReport } from "../src/render.ts";
+import { renderReport, displayWidth } from "../src/render.ts";
 import { HealthTracker } from "../src/health.ts";
 import type { CpaConfig } from "../src/types.ts";
 
@@ -371,6 +371,24 @@ describe("renderReport usage section", () => {
     ])!;
     const out = render({ supported: true, accounts: [account!], observedAt: null });
     expect(out).toContain("claude-sonnet-5 overage 90%");
+  });
+
+  test("percentages line up even when a model-scoped label is wider", () => {
+    const [account] = parseAuthFiles([
+      {
+        ...claudeFile,
+        model_quotas: {
+          "claude-sonnet-5": { signals: { "Anthropic-Ratelimit-Unified-Overage-Utilization": "0.10" } },
+        },
+      },
+    ])!;
+    const rows = render({ supported: true, accounts: [account!], observedAt: null })
+      .split("\n")
+      .filter((line) => line.includes("%"));
+    expect(rows.length).toBe(2);
+    // The value column is sized to the widest label, so both percentages start together.
+    const percentColumns = rows.map((line) => displayWidth(line.slice(0, line.indexOf("%"))));
+    expect(percentColumns[0]).toBe(percentColumns[1]);
   });
 
   test("keeps the unsupported reason visible", () => {

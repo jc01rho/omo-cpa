@@ -28,6 +28,9 @@ const ACCOUNT_STATE_LABEL: Record<UsageAccount["status"], string> = {
   ok: "정상", error: "오류", off: "비활성",
 };
 
+/** Keeps a lone short window from hugging the percentage. */
+const MIN_WINDOW_WIDTH = 12;
+
 /** One-line summary suitable for the TUI footer. */
 export function renderStatusLine(tiers: TierCounts | null, health: HealthSnapshot): string {
   const parts: string[] = [];
@@ -86,7 +89,11 @@ export function renderReport(input: ReportInput): string {
         .filter((part): part is string => part !== null);
       L.push(tail.length > 0 ? `${head} · ${tail.join(" · ")}` : head);
       const windows = [...a.windows, ...leftoverModelWindows(a)];
-      for (const w of windows) L.push(`      ${pad(w.label, 16)} ${renderWindow(w)}`);
+      // Size the value column to its own content: a model-scoped label
+      // ("claude-sonnet-5 overage") is wider than a bare window name, and a
+      // fixed width would push its percentage out of line.
+      const width = windows.reduce((max, w) => Math.max(max, displayWidth(w.label)), MIN_WINDOW_WIDTH);
+      for (const w of windows) L.push(`      ${pad(w.label, width)} ${renderWindow(w)}`);
     }
   }
 
