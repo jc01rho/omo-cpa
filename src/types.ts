@@ -33,13 +33,23 @@ export interface HealthSnapshot {
 
 export type UsageResult =
   | { supported: false; reason: string }
-  | { supported: true; accounts: UsageAccount[] };
+  | { supported: true; accounts: UsageAccount[]; observedAt: number | null };
 
 export interface UsageAccount {
   provider: string;
   label: string;
-  status: "ok" | "error" | "unknown";
+  /** `off` = the credential is disabled server-side, not an error. */
+  status: "ok" | "error" | "off";
   detail: string | null;
+  /** Plan / active limit / credits summary from the same snapshot. */
+  meta: string | null;
+  windows: UsageWindow[];
+  /** Per-model watermarks, for credentials whose quota is model-scoped. */
+  models: UsageModelQuota[];
+}
+
+export interface UsageModelQuota {
+  id: string;
   windows: UsageWindow[];
 }
 
