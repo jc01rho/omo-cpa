@@ -142,8 +142,14 @@ function leftoverModelWindows(account: UsageAccount): UsageWindow[] {
   return out;
 }
 
+/**
+ * Identity of a rendered window: everything the row prints after its label.
+ * Two windows are the same row only when they would render identically —
+ * matching on the percentage alone would hide a window that differs in its
+ * reset instant.
+ */
 function windowKey(window: UsageWindow): string {
-  return `${window.label}|${window.remainingPercent}`;
+  return `${window.label}|${window.remainingPercent}|${window.resetsAt}|${window.note}`;
 }
 
 function renderWindow(window: UsageWindow): string {

@@ -369,7 +369,8 @@ describe("deriveWindows", () => {
       "X-Codex-Additional-Bengalfox-Primary-Window-Minutes": "10080",
     });
     expect(windows).toEqual([
-      { label: "Spark 7일", remainingPercent: 20, resetsAt: null, note: "Spark" },
+      // The name is carried by the label; repeating it in the note would be noise.
+      { label: "Spark 7일", remainingPercent: 20, resetsAt: null, note: null },
     ]);
   });
 
@@ -377,6 +378,36 @@ describe("deriveWindows", () => {
     // The flag names the whole credential, so there is no window label to use.
     expect(deriveWindows({ "X-Codex-Limit-Reached": "true" })).toEqual([
       { label: "통합", remainingPercent: 0, resetsAt: null, note: "한도 도달" },
+    ]);
+  });
+
+  test("a base-scope refusal does not zero sibling limits with their own quota", () => {
+    // Codex builds X-Codex-Limit-Reached from the BASE rate-limit object only;
+    // code-review and additional limits report their own usage on the same
+    // credential, so a spent weekly base must not mark them exhausted.
+    const windows = deriveWindows({
+      "X-Codex-Limit-Reached": "true",
+      "X-Codex-Primary-Used-Percent": "100",
+      "X-Codex-Primary-Window-Minutes": "10080",
+      "X-Codex-Code-Review-Primary-Used-Percent": "4",
+      "X-Codex-Code-Review-Primary-Window-Minutes": "300",
+    });
+    expect(windows.map((w) => [w.label, w.remainingPercent, w.note])).toEqual([
+      ["7일", 0, "한도 도달"],
+      ["코드 리뷰 5시간", 96, null],
+    ]);
+  });
+
+  test("a refusal does not leak into a sibling id that shares its prefix", () => {
+    // The real id shapes GPT-5.3-Codex and GPT-5.3-Codex-Spark are prefixes of
+    // each other, so one limit's refusal must not zero the other.
+    const windows = deriveWindows({
+      "X-Codex-Additional-Gpt-5.3-Codex-Allowed": "false",
+      "X-Codex-Additional-Gpt-5.3-Codex-Spark-Primary-Used-Percent": "0",
+      "X-Codex-Additional-Gpt-5.3-Codex-Spark-Primary-Window-Minutes": "300",
+    });
+    expect(windows.map((w) => [w.label, w.remainingPercent])).toEqual([
+      ["additional gpt 5.3 codex spark 5시간", 100],
     ]);
   });
 

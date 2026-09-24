@@ -272,8 +272,8 @@ export function deriveWindows(signals: Record<string, string>, observedAt: numbe
   }
 
   const out: UsageWindow[] = [];
-  // A refusal can arrive with no utilization at all, so a flagged leaf scope
-  // still needs a row: the refusal is the fact, not the percentage.
+  // A refusal can arrive with no utilization at all, so a flagged scope that
+  // owns its own windows still needs a row: the refusal is the fact.
   for (const scope of [...refused, ...allowed]) {
     if (!groups.has(scope) && isLeafScope(scope, groups)) groups.set(scope, blankGroup());
   }
@@ -293,7 +293,9 @@ export function deriveWindows(signals: Record<string, string>, observedAt: numbe
       // Never report an allowance the upstream has already refused.
       remainingPercent: isRefused ? 0 : round2(group.remaining ?? 0),
       resetsAt,
-      note: isRefused ? "한도 도달" : limit?.name ?? limitNames.get(key) ?? null,
+      // The limit name is already part of the label when it matched a window;
+      // only an unmatched scope name needs repeating here.
+      note: isRefused ? "한도 도달" : limit === null ? limitNames.get(key) ?? null : null,
     });
   }
   return out;
@@ -312,24 +314,37 @@ function isLeafScope(scope: string, groups: Map<string, unknown>): boolean {
 }
 
 /**
- * The most specific flag naming this window decides it: the window's own scope,
- * then the nearest enclosing scope.
+ * The scope a window belongs to.
+ *
+ * A flag covers exactly the windows whose own parent scope is that flag's scope.
+ * Prefix matching is too coarse here: Codex generates `X-Codex-Limit-Reached`
+ * from the BASE rate-limit object only, while code-review and additional limits
+ * are independent quotas reported on the same credential — so a base refusal
+ * must not zero a code-review window that still has 96% of its allowance.
+ */
+function parentScope(key: string): string | null {
+  for (const slot of ["primary", "secondary"]) {
+    if (key.endsWith(`-${slot}`)) return key.slice(0, key.length - slot.length - 1);
+  }
+  // Anthropic names windows without a slot; each sits directly under the root.
+  for (const root of NAMESPACE_ROOTS) {
+    if (key.startsWith(`${root}-`)) return root;
+  }
+  return null;
+}
+
+/**
+ * The most specific flag naming this window decides it: a flag on the window
+ * itself, then a flag on the exact scope that owns it.
  */
 function resolveRefused(key: string, refused: Set<string>, allowed: Set<string>): boolean {
   if (refused.has(key)) return true;
   if (allowed.has(key)) return false;
-  let nearest: { depth: number; refused: boolean } | null = null;
-  for (const scope of refused) {
-    if (key.startsWith(`${scope}-`) && (nearest === null || scope.length > nearest.depth)) {
-      nearest = { depth: scope.length, refused: true };
-    }
-  }
-  for (const scope of allowed) {
-    if (key.startsWith(`${scope}-`) && (nearest === null || scope.length > nearest.depth)) {
-      nearest = { depth: scope.length, refused: false };
-    }
-  }
-  return nearest?.refused ?? false;
+  const parent = parentScope(key);
+  if (parent === null) return false;
+  if (refused.has(parent)) return true;
+  if (allowed.has(parent)) return false;
+  return false;
 }
 
 function blankGroup(): { remaining: number | null; minutes: number | null; absolute: number | null; relative: number | null } {
