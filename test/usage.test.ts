@@ -51,7 +51,7 @@ const claudeSignals = {
 const codexFile = {
   account: "codex-user@example.com",
   account_type: "oauth",
-  auth_index: "09ff8f47e63a511b",
+  auth_index: "0a1b2c3d4e5f6071",
   disabled: false,
   email: "codex-user@example.com",
   failed: 0,
@@ -71,7 +71,7 @@ const codexFile = {
 
 const claudeFile = {
   account: "claude-user@example.com",
-  auth_index: "bc01cc09311d90cf",
+  auth_index: "1b2c3d4e5f607182",
   disabled: false,
   email: "claude-user@example.com",
   label: "claude-user@example.com",
@@ -85,7 +85,7 @@ const claudeFile = {
 };
 
 const emptyQuotaFile = {
-  auth_index: "9da8d83689a2dfd5",
+  auth_index: "2c3d4e5f60718293",
   disabled: false,
   email: "copilot-user@example.com",
   label: "copilot-user@example.com",
@@ -99,7 +99,7 @@ const emptyQuotaFile = {
 };
 
 const disabledFile = {
-  auth_index: "0327cfca0b6df67f",
+  auth_index: "3d4e5f6071829304",
   disabled: true,
   email: "old-user@example.com",
   label: "old-user@example.com",
