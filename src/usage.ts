@@ -194,8 +194,11 @@ const WINDOW_FIELDS: WindowField[] = [
  */
 const REJECTION_FIELDS = new Set<WindowField>(["status", "limit-reached", "allowed", "disabled-reason"]);
 
-/** Provider-owned prefixes that carry no display value once the window name is known. */
-const NAMESPACE_PREFIXES = ["x-codex-", "anthropic-ratelimit-unified-"];
+/**
+ * Provider namespaces. The bare root key (`x-codex`, `anthropic-ratelimit-unified`)
+ * names no window — it speaks for the whole credential — so it strips to "".
+ */
+const NAMESPACE_ROOTS = ["x-codex", "anthropic-ratelimit-unified"];
 
 /** Anthropic reports windows by name instead of by length. */
 const NAMED_WINDOWS: Record<string, string> = {
@@ -302,7 +305,6 @@ export function deriveWindows(signals: Record<string, string>, observedAt: numbe
  * `x-codex-code-review-primary` and is not itself a window).
  */
 function isLeafScope(scope: string, groups: Map<string, unknown>): boolean {
-  if (stripNamespace(scope) === "") return false;
   for (const key of groups.keys()) {
     if (key.startsWith(`${scope}-`)) return false;
   }
@@ -350,8 +352,9 @@ function isWindowRejected(field: WindowField, value: string): boolean {
 }
 
 function stripNamespace(key: string): string {
-  for (const prefix of NAMESPACE_PREFIXES) {
-    if (key.startsWith(prefix)) return key.slice(prefix.length);
+  for (const root of NAMESPACE_ROOTS) {
+    if (key === root) return "";
+    if (key.startsWith(`${root}-`)) return key.slice(root.length + 1);
   }
   return key;
 }
@@ -400,6 +403,7 @@ function windowLabel(
   const scope = stripNamespace(limit === null ? key : limit.rest);
   const name = limit === null ? "" : `${limit.name} `;
   if (minutes === null) {
+    // A namespace root (`x-codex`) strips to "" and names the whole credential.
     return `${name}${NAMED_WINDOWS[scope] ?? scope.replace(/-/g, " ")}`;
   }
   const group = scopeGroup(scope);

@@ -373,6 +373,13 @@ describe("deriveWindows", () => {
     ]);
   });
 
+  test("a credential-wide refusal with no window data still reports itself", () => {
+    // The flag names the whole credential, so there is no window label to use.
+    expect(deriveWindows({ "X-Codex-Limit-Reached": "true" })).toEqual([
+      { label: "통합", remainingPercent: 0, resetsAt: null, note: "한도 도달" },
+    ]);
+  });
+
   test("a namespaced limit keeps its scope in the label when the length is shared", () => {
     // The base and code-review limits can both be 7-day windows; a bare length
     // would collapse two distinct limits into one row.
