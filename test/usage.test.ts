@@ -272,6 +272,46 @@ describe("deriveWindows", () => {
     ]);
   });
 
+  test("a window the upstream refused never reads as an allowance", () => {
+    // Anthropic keeps reporting the utilization it measured on a rejected window.
+    expect(deriveWindows({
+      "Anthropic-Ratelimit-Unified-5h-Utilization": "0.43",
+      "Anthropic-Ratelimit-Unified-5h-Status": "rejected",
+    })[0]).toEqual({ label: "5시간", remainingPercent: 0, resetsAt: null, note: "한도 도달" });
+    expect(deriveWindows({
+      "X-Codex-Primary-Used-Percent": "39",
+      "X-Codex-Primary-Window-Minutes": "10080",
+      "X-Codex-Primary-Limit-Reached": "true",
+    })[0]).toEqual({ label: "7일", remainingPercent: 0, resetsAt: null, note: "한도 도달" });
+  });
+
+  test("healthy rejection-shaped signals stay healthy", () => {
+    // "allowed_warning" and allowed=true are the upstream saying "still usable".
+    expect(deriveWindows({
+      "Anthropic-Ratelimit-Unified-5h-Utilization": "0.99",
+      "Anthropic-Ratelimit-Unified-5h-Status": "allowed_warning",
+    })[0]!.remainingPercent).toBe(1);
+    expect(deriveWindows({
+      "X-Codex-Primary-Used-Percent": "39",
+      "X-Codex-Primary-Window-Minutes": "10080",
+      "X-Codex-Primary-Allowed": "true",
+    })[0]!.remainingPercent).toBe(61);
+    // An empty disabled-reason is the absence of a reason.
+    expect(deriveWindows({
+      "Anthropic-Ratelimit-Unified-Overage-Utilization": "0.43",
+      "Anthropic-Ratelimit-Unified-Overage-Disabled-Reason": "",
+    })[0]!.remainingPercent).toBe(57);
+  });
+
+  test("a credential-wide rejection flag applies to every window", () => {
+    const windows = deriveWindows({
+      "X-Codex-Limit-Reached": "true",
+      "X-Codex-Primary-Used-Percent": "39",
+      "X-Codex-Primary-Window-Minutes": "10080",
+    });
+    expect(windows[0]).toEqual({ label: "7일", remainingPercent: 0, resetsAt: null, note: "한도 도달" });
+  });
+
   test("percentages are clamped to 0..100", () => {
     expect(deriveWindows({ "X-Codex-Primary-Used-Percent": "140", "X-Codex-Primary-Window-Minutes": "60" })[0]!.remainingPercent)
       .toBe(0);

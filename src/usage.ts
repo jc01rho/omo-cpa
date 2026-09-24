@@ -159,18 +159,33 @@ type WindowField =
   | "reset-at"
   | "reset-after-seconds"
   | "reset"
-  | "limit-name";
+  | "limit-name"
+  | "disabled-reason"
+  | "limit-reached"
+  | "allowed"
+  | "status";
 
 /** Longest suffix first, so `-reset-at` is not read as a window named `…-reset`. */
 const WINDOW_FIELDS: WindowField[] = [
   "used-percent",
   "reset-after-seconds",
   "window-minutes",
+  "disabled-reason",
+  "limit-reached",
   "utilization",
   "limit-name",
   "reset-at",
+  "allowed",
+  "status",
   "reset",
 ];
+
+/**
+ * Fields that mean "this window cannot serve", independent of its utilization.
+ * Upstreams keep reporting the utilization they measured, so a rejected window
+ * with 43% utilization must still read as exhausted.
+ */
+const REJECTION_FIELDS = new Set<WindowField>(["status", "limit-reached", "allowed", "disabled-reason"]);
 
 /** Provider-owned prefixes that carry no display value once the window name is known. */
 const NAMESPACE_PREFIXES = ["x-codex-", "anthropic-ratelimit-unified-"];
@@ -196,11 +211,18 @@ const NAMED_WINDOWS: Record<string, string> = {
  * read like a real allowance.
  */
 export function deriveWindows(signals: Record<string, string>): UsageWindow[] {
-  const groups = new Map<
-    string,
-    { remaining: number | null; minutes: number | null; absolute: number | null; relative: number | null }
-  >();
+  type Group = {
+    remaining: number | null;
+    minutes: number | null;
+    absolute: number | null;
+    relative: number | null;
+    rejected: boolean;
+  };
+  const groups = new Map<string, Group>();
   const limitNames = new Map<string, string>();
+  // Signals whose own name is just the provider namespace apply to every window
+  // of that snapshot (a credential-wide "limit reached" flag).
+  let namespaceRejected = false;
 
   for (const [name, value] of Object.entries(signals)) {
     const split = splitSignal(name);
@@ -209,7 +231,18 @@ export function deriveWindows(signals: Record<string, string>): UsageWindow[] {
       limitNames.set(split.key, value);
       continue;
     }
-    const group = groups.get(split.key) ?? { remaining: null, minutes: null, absolute: null, relative: null };
+    if (REJECTION_FIELDS.has(split.field)) {
+      if (!isWindowRejected(split.field, value)) continue;
+      if (isNamespaceWide(split.key)) {
+        namespaceRejected = true;
+      } else {
+        const group = groups.get(split.key) ?? blankGroup();
+        group.rejected = true;
+        groups.set(split.key, group);
+      }
+      continue;
+    }
+    const group = groups.get(split.key) ?? blankGroup();
     if (split.field === "used-percent") {
       const used = num(value);
       if (used !== null) group.remaining = clamp(100 - used);
@@ -239,14 +272,49 @@ export function deriveWindows(signals: Record<string, string>): UsageWindow[] {
     // An absolute instant is authoritative; the relative one is a fallback.
     const resetsAt = group.absolute ??
       (group.relative !== null ? Date.now() + group.relative * 1000 : null);
+    const rejected = group.rejected || namespaceRejected;
     out.push({
       label: windowLabel(key, group.minutes, limit),
-      remainingPercent: round2(group.remaining),
+      // Never report an allowance the upstream has already refused.
+      remainingPercent: rejected ? 0 : round2(group.remaining),
       resetsAt,
-      note: limit?.name ?? null,
+      note: rejected ? "한도 도달" : limit?.name ?? null,
     });
   }
   return out;
+}
+
+function blankGroup(): { remaining: number | null; minutes: number | null; absolute: number | null; relative: number | null; rejected: boolean } {
+  return { remaining: null, minutes: null, absolute: null, relative: null, rejected: false };
+}
+
+/**
+ * Whether a rejection-shaped field actually says "refused".
+ * A status of "allowed"/"allowed_warning" and `allowed: true` are healthy, and
+ * an empty reason string is not a reason.
+ */
+function isWindowRejected(field: WindowField, value: string): boolean {
+  const text = value.trim().toLowerCase();
+  if (text === "") return false;
+  if (field === "status") return !text.startsWith("allowed");
+  if (field === "allowed") return text === "false" || text === "0" || text === "no";
+  return true;
+}
+
+function stripNamespace(key: string): string {
+  const scope = key;
+  for (const prefix of NAMESPACE_PREFIXES) {
+    if (scope.startsWith(prefix)) return scope.slice(prefix.length);
+  }
+  return scope;
+}
+
+/**
+ * `X-Codex-Limit-Reached` names no window, so it speaks for the credential.
+ * The key keeps the namespace without its trailing dash (`x-codex`).
+ */
+function isNamespaceWide(key: string): boolean {
+  return NAMESPACE_PREFIXES.some((prefix) => key === prefix.slice(0, -1));
 }
 
 function splitSignal(name: string): { key: string; field: WindowField } | null {
@@ -281,10 +349,7 @@ function windowLabel(
   minutes: number | null,
   limit: { name: string; rest: string } | null,
 ): string {
-  let scope = limit === null ? key : limit.rest;
-  for (const prefix of NAMESPACE_PREFIXES) {
-    if (scope.startsWith(prefix)) scope = scope.slice(prefix.length);
-  }
+  const scope = stripNamespace(limit === null ? key : limit.rest);
   const base = minutes !== null ? minutesLabel(minutes) : NAMED_WINDOWS[scope] ?? scope.replace(/-/g, " ");
   return limit === null ? base : `${limit.name} ${base}`;
 }
