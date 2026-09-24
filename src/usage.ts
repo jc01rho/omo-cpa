@@ -62,7 +62,7 @@ export async function fetchUsage(
       reason: "관리 API 응답 형식을 알 수 없어 사용량을 표시하지 않음 (files/auth_files/data 배열 없음)",
     };
   }
-  return { supported: true, accounts, observedAt: newestObservation(body) };
+  return { supported: true, accounts };
 }
 
 /**
@@ -78,23 +78,50 @@ export function parseAuthFiles(body: unknown): UsageAccount[] | null {
   for (const item of files) {
     if (!item || typeof item !== "object") continue;
     const rec = item as Record<string, unknown>;
+    const observedAt = observationTime(rec["quota"]);
     const signals = signalMap(rec["quota"]);
     // The server reports `active`, `disabled`, or `error`. `status_message` is
     // empty for healthy credentials, so any non-empty one is the error detail.
     const status = (str(rec["status"]) ?? "").toLowerCase();
     const disabled = rec["disabled"] === true || rec["unavailable"] === true || status === "disabled";
     const detail = disabled ? null : str(rec["status_message"]);
+    const windows = deriveWindows(signals, observedAt);
+    const models = parseModelQuotas(rec["model_quotas"]);
     out.push({
       provider: str(rec["provider"]) ?? str(rec["type"]) ?? "unknown",
       label: str(rec["label"]) ?? str(rec["email"]) ?? str(rec["account"]) ?? str(rec["name"]) ?? "(이름 없음)",
       status: disabled ? "off" : status === "error" || detail ? "error" : "ok",
       detail,
       meta: accountMeta(signals),
-      windows: deriveWindows(signals),
-      models: parseModelQuotas(rec["model_quotas"]),
+      windows,
+      models,
+      // The stalest number this account actually renders, so the report never
+      // claims more freshness than the rows beneath it.
+      observedAt: stalestOf([
+        ...(windows.length > 0 ? [observedAt] : []),
+        ...models.flatMap((m) => (m.windows.length > 0 ? [m.observedAt] : [])),
+      ]),
     });
   }
   return out;
+}
+
+/** Snapshot instant of one `{observed_at, signals}` container. */
+function observationTime(container: unknown): number | null {
+  if (!container || typeof container !== "object") return null;
+  const raw = str((container as Record<string, unknown>)["observed_at"]);
+  if (raw === null) return null;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function stalestOf(times: (number | null)[]): number | null {
+  let oldest: number | null = null;
+  for (const time of times) {
+    if (time === null) continue;
+    if (oldest === null || time < oldest) oldest = time;
+  }
+  return oldest;
 }
 
 /** `{files:[…]}` is the documented envelope; the bare-array and `data` shapes are kept for older builds. */
@@ -106,27 +133,6 @@ function authFileList(body: unknown): unknown[] | null {
     if (Array.isArray(rec[key])) return rec[key] as unknown[];
   }
   return null;
-}
-
-/**
- * When the newest credential watermark was captured.
- *
- * The envelope's own `observed_at` is the moment the listing was generated, so
- * it is always "now" and says nothing. Each file's `quota.observed_at` is when
- * that credential's upstream snapshot was taken, which is what can go stale.
- */
-function newestObservation(body: unknown): number | null {
-  const files = authFileList(body);
-  if (files === null) return null;
-  let newest: number | null = null;
-  for (const item of files) {
-    if (!item || typeof item !== "object") continue;
-    const raw = str((((item as Record<string, unknown>)["quota"] ?? {}) as Record<string, unknown>)["observed_at"]);
-    if (raw === null) continue;
-    const ms = Date.parse(raw);
-    if (Number.isFinite(ms) && (newest === null || ms > newest)) newest = ms;
-  }
-  return newest;
 }
 
 /** Reads the `{signals:{…}}` envelope, keeping only string values. */
@@ -146,8 +152,9 @@ function parseModelQuotas(raw: unknown): UsageModelQuota[] {
   if (!raw || typeof raw !== "object") return [];
   const out: UsageModelQuota[] = [];
   for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
-    const windows = deriveWindows(signalMap(value));
-    if (windows.length > 0) out.push({ id, windows });
+    const observedAt = observationTime(value);
+    const windows = deriveWindows(signalMap(value), observedAt);
+    if (windows.length > 0) out.push({ id, windows, observedAt });
   }
   return out;
 }
@@ -181,7 +188,7 @@ const WINDOW_FIELDS: WindowField[] = [
 ];
 
 /**
- * Fields that mean "this window cannot serve", independent of its utilization.
+ * Fields that mean "this scope cannot serve", independent of its utilization.
  * Upstreams keep reporting the utilization they measured, so a rejected window
  * with 43% utilization must still read as exhausted.
  */
@@ -210,36 +217,35 @@ const NAMED_WINDOWS: Record<string, string> = {
  * bare reset watermark with no utilization would otherwise print as "n/a" and
  * read like a real allowance.
  */
-export function deriveWindows(signals: Record<string, string>): UsageWindow[] {
+export function deriveWindows(signals: Record<string, string>, observedAt: number | null = null): UsageWindow[] {
   type Group = {
     remaining: number | null;
     minutes: number | null;
     absolute: number | null;
     relative: number | null;
-    rejected: boolean;
   };
   const groups = new Map<string, Group>();
+  // Flags are recorded per scope. A scope is the whole credential
+  // ("x-codex", "anthropic-ratelimit-unified"), a namespaced limit
+  // ("x-codex-code-review"), or a single window ("x-codex-primary"). The
+  // nearest scope wins, so a credential-wide "rejected" cannot override a
+  // window that explicitly reports "allowed" (Anthropic's overage-only case).
+  const refused = new Set<string>();
+  const allowed = new Set<string>();
   const limitNames = new Map<string, string>();
-  // Signals whose own name is just the provider namespace apply to every window
-  // of that snapshot (a credential-wide "limit reached" flag).
-  let namespaceRejected = false;
 
   for (const [name, value] of Object.entries(signals)) {
     const split = splitSignal(name);
     if (split === null) continue;
     if (split.field === "limit-name") {
+      // The name belongs to the scope one level up: `additional-foo-limit-name`
+      // names the `additional-foo` scope, not a window called that.
       limitNames.set(split.key, value);
       continue;
     }
     if (REJECTION_FIELDS.has(split.field)) {
-      if (!isWindowRejected(split.field, value)) continue;
-      if (isNamespaceWide(split.key)) {
-        namespaceRejected = true;
-      } else {
-        const group = groups.get(split.key) ?? blankGroup();
-        group.rejected = true;
-        groups.set(split.key, group);
-      }
+      if (isWindowRejected(split.field, value)) refused.add(split.key);
+      else allowed.add(split.key);
       continue;
     }
     const group = groups.get(split.key) ?? blankGroup();
@@ -253,7 +259,7 @@ export function deriveWindows(signals: Record<string, string>): UsageWindow[] {
     } else if (split.field === "window-minutes") {
       group.minutes = num(value);
     } else if (split.field === "reset-after-seconds") {
-      // A relative watermark: seconds from the moment the upstream answered.
+      // A relative watermark: seconds from the instant the upstream answered.
       const seconds = num(value);
       if (seconds !== null && seconds > 0) group.relative = seconds;
     } else {
@@ -263,31 +269,69 @@ export function deriveWindows(signals: Record<string, string>): UsageWindow[] {
   }
 
   const out: UsageWindow[] = [];
+  // A refusal can arrive with no utilization at all, so a flagged leaf scope
+  // still needs a row: the refusal is the fact, not the percentage.
+  for (const scope of [...refused, ...allowed]) {
+    if (!groups.has(scope) && isLeafScope(scope, groups)) groups.set(scope, blankGroup());
+  }
   for (const [key, group] of groups) {
-    const rejected = group.rejected || namespaceRejected;
+    const isRefused = resolveRefused(key, refused, allowed);
     // A zero-length window is an unused slot (Codex reports one when no
     // secondary limit applies), not an allowance or a spent limit.
     if (group.minutes !== null && group.minutes <= 0) continue;
-    // Without a percentage there is normally nothing to show — except a window
-    // the upstream refused, which is spent whether or not it reported a value.
-    if (group.remaining === null && !rejected) continue;
-    const limit = matchLimitName(key, limitNames);
-    // An absolute instant is authoritative; the relative one is a fallback.
+    if (group.remaining === null && !isRefused) continue;
+    // An absolute instant is authoritative; a relative one counts from the
+    // snapshot, not from whenever this report happens to be rendered.
     const resetsAt = group.absolute ??
-      (group.relative !== null ? Date.now() + group.relative * 1000 : null);
+      (group.relative !== null ? (observedAt ?? Date.now()) + group.relative * 1000 : null);
+    const limit = matchLimitName(key, limitNames);
     out.push({
       label: windowLabel(key, group.minutes, limit),
       // Never report an allowance the upstream has already refused.
-      remainingPercent: rejected ? 0 : round2(group.remaining ?? 0),
+      remainingPercent: isRefused ? 0 : round2(group.remaining ?? 0),
       resetsAt,
-      note: rejected ? "한도 도달" : limit?.name ?? null,
+      note: isRefused ? "한도 도달" : limit?.name ?? limitNames.get(key) ?? null,
     });
   }
   return out;
 }
 
-function blankGroup(): { remaining: number | null; minutes: number | null; absolute: number | null; relative: number | null; rejected: boolean } {
-  return { remaining: null, minutes: null, absolute: null, relative: null, rejected: false };
+/**
+ * A scope that should render as its own row: inside a provider namespace and
+ * governing no deeper scope (a namespace like `x-codex-code-review` owns
+ * `x-codex-code-review-primary` and is not itself a window).
+ */
+function isLeafScope(scope: string, groups: Map<string, unknown>): boolean {
+  if (stripNamespace(scope) === "") return false;
+  for (const key of groups.keys()) {
+    if (key.startsWith(`${scope}-`)) return false;
+  }
+  return true;
+}
+
+/**
+ * The most specific flag naming this window decides it: the window's own scope,
+ * then the nearest enclosing scope.
+ */
+function resolveRefused(key: string, refused: Set<string>, allowed: Set<string>): boolean {
+  if (refused.has(key)) return true;
+  if (allowed.has(key)) return false;
+  let nearest: { depth: number; refused: boolean } | null = null;
+  for (const scope of refused) {
+    if (key.startsWith(`${scope}-`) && (nearest === null || scope.length > nearest.depth)) {
+      nearest = { depth: scope.length, refused: true };
+    }
+  }
+  for (const scope of allowed) {
+    if (key.startsWith(`${scope}-`) && (nearest === null || scope.length > nearest.depth)) {
+      nearest = { depth: scope.length, refused: false };
+    }
+  }
+  return nearest?.refused ?? false;
+}
+
+function blankGroup(): { remaining: number | null; minutes: number | null; absolute: number | null; relative: number | null } {
+  return { remaining: null, minutes: null, absolute: null, relative: null };
 }
 
 /**
@@ -310,14 +354,6 @@ function stripNamespace(key: string): string {
     if (key.startsWith(prefix)) return key.slice(prefix.length);
   }
   return key;
-}
-
-/**
- * `X-Codex-Limit-Reached` names no window, so it speaks for the credential.
- * The key keeps the namespace without its trailing dash (`x-codex`).
- */
-function isNamespaceWide(key: string): boolean {
-  return NAMESPACE_PREFIXES.some((prefix) => key === prefix.slice(0, -1));
 }
 
 function splitSignal(name: string): { key: string; field: WindowField } | null {
@@ -347,14 +383,37 @@ function matchLimitName(
   return best;
 }
 
+/**
+ * Build the display label for one window.
+ *
+ * A window length alone is not an identity: the code-review limit and the base
+ * limit can both run for 7 days, so the scope has to stay in the label or two
+ * distinct limits collapse into one row. Codex expresses scope as an optional
+ * namespaced group plus a `primary`/`secondary` slot; Anthropic names its
+ * windows directly.
+ */
 function windowLabel(
   key: string,
   minutes: number | null,
   limit: { name: string; rest: string } | null,
 ): string {
   const scope = stripNamespace(limit === null ? key : limit.rest);
-  const base = minutes !== null ? minutesLabel(minutes) : NAMED_WINDOWS[scope] ?? scope.replace(/-/g, " ");
-  return limit === null ? base : `${limit.name} ${base}`;
+  const name = limit === null ? "" : `${limit.name} `;
+  if (minutes === null) {
+    return `${name}${NAMED_WINDOWS[scope] ?? scope.replace(/-/g, " ")}`;
+  }
+  const group = scopeGroup(scope);
+  const groupLabel = group === "" ? "" : `${NAMED_WINDOWS[group] ?? group.replace(/-/g, " ")} `;
+  return `${name}${groupLabel}${minutesLabel(minutes)}`;
+}
+
+/** The namespaced group of a slot scope: `code-review-primary` -> `code-review`. */
+function scopeGroup(scope: string): string {
+  for (const slot of ["primary", "secondary"]) {
+    if (scope === slot) return "";
+    if (scope.endsWith(`-${slot}`)) return scope.slice(0, scope.length - slot.length - 1);
+  }
+  return scope;
 }
 
 function minutesLabel(minutes: number): string {

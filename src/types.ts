@@ -33,7 +33,7 @@ export interface HealthSnapshot {
 
 export type UsageResult =
   | { supported: false; reason: string }
-  | { supported: true; accounts: UsageAccount[]; observedAt: number | null };
+  | { supported: true; accounts: UsageAccount[] };
 
 export interface UsageAccount {
   provider: string;
@@ -46,11 +46,17 @@ export interface UsageAccount {
   windows: UsageWindow[];
   /** Per-model watermarks, for credentials whose quota is model-scoped. */
   models: UsageModelQuota[];
+  /**
+   * Oldest snapshot instant behind the rows this account renders.
+   * Null when the credential carries no watermark at all.
+   */
+  observedAt: number | null;
 }
 
 export interface UsageModelQuota {
   id: string;
   windows: UsageWindow[];
+  observedAt: number | null;
 }
 
 export interface UsageWindow {

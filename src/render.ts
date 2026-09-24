@@ -102,13 +102,16 @@ export function renderReport(input: ReportInput): string {
 
 function usageSummary(usage: Extract<UsageResult, { supported: true }>): string {
   const active = usage.accounts.filter((a) => a.status !== "off").length;
-  const observed = usage.accounts.filter((a) => a.windows.length > 0 || a.models.length > 0).length;
+  const withUsage = usage.accounts.filter((a) => a.windows.length > 0 || a.models.length > 0);
   const parts = [
     `활성 ${active}`,
     `비활성 ${usage.accounts.length - active}`,
-    `사용량 관측 ${observed}`,
+    `사용량 관측 ${withUsage.length}`,
   ];
-  if (usage.observedAt !== null) parts.push(`스냅샷 ${formatAgo(usage.observedAt)}`);
+  // Every watermark behind the rows still shown, so the age cannot look fresher
+  // than the oldest number beneath it.
+  const times = withUsage.map((a) => a.observedAt).filter((t): t is number => t !== null);
+  if (times.length > 0) parts.push(`스냅샷 ${formatAgo(Math.min(...times))}`);
   return parts.join(" · ");
 }
 

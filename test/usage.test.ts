@@ -194,22 +194,39 @@ describe("parseAuthFiles", () => {
       async (root) => {
         const res = await fetchUsage(root, "k");
         if (!res.supported) throw new Error(res.reason);
-        const ageMinutes = (Date.now() - res.observedAt!) / 60_000;
-        expect(ageMinutes).toBeGreaterThanOrEqual(4);
-        expect(ageMinutes).toBeLessThan(6);
+        const [codex, claude] = res.accounts;
+        // Each account is dated from its own credential's snapshot, not the listing.
+        expect(Math.round((Date.now() - codex!.observedAt!) / 60_000)).toBe(90);
+        expect(Math.round((Date.now() - claude!.observedAt!) / 60_000)).toBe(5);
       },
     );
   });
 
   test("an unparseable watermark time is unknown, not now", async () => {
     await withServer(
-      () => Response.json({ files: [{ ...codexFile, quota: { observed_at: "nonsense", signals: codexSignals } }] }),
+      () => Response.json({
+        files: [{ ...codexFile, model_quotas: undefined, quota: { observed_at: "nonsense", signals: codexSignals } }],
+      }),
       async (root) => {
         const res = await fetchUsage(root, "k");
         if (!res.supported) throw new Error(res.reason);
-        expect(res.observedAt).toBeNull();
+        expect(res.accounts[0]!.windows.length).toBeGreaterThan(0);
+        expect(res.accounts[0]!.observedAt).toBeNull();
       },
     );
+  });
+
+  test("a model-scoped watermark ages the account that renders it", () => {
+    // The account row itself is fresh, but a 31-minute-old per-model row is what
+    // the report prints — so that is the age the report must show.
+    const fresh = new Date(Date.now() - 60 * 1000).toISOString();
+    const old = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+    const [account] = parseAuthFiles([{
+      ...claudeFile,
+      quota: { observed_at: fresh, signals: claudeSignals },
+      model_quotas: { "claude-sonnet-5": { observed_at: old, signals: { "Anthropic-Ratelimit-Unified-Overage-Utilization": "0.10" } } },
+    }])!;
+    expect(Math.round((Date.now() - account!.observedAt!) / 60_000)).toBe(31);
   });
 
   test("per-model snapshots are read for model-scoped credentials", () => {
@@ -263,7 +280,19 @@ describe("deriveWindows", () => {
     expect(deriveWindows({ "Anthropic-Ratelimit-Unified-Reset": "1790310427" })).toEqual([]);
   });
 
-  test("relative reset seconds are used when no absolute instant exists", () => {
+  test("relative reset seconds count from the snapshot, not from render time", () => {
+    // A credential whose snapshot is 11 minutes old must not report a reset
+    // 11 minutes later than it is.
+    const observedAt = Date.now() - 11 * 60 * 1000;
+    const [window] = deriveWindows({
+      "X-Codex-Primary-Used-Percent": "5",
+      "X-Codex-Primary-Window-Minutes": "60",
+      "X-Codex-Primary-Reset-After-Seconds": "600",
+    }, observedAt);
+    expect(window!.resetsAt).toBe(observedAt + 600_000);
+  });
+
+  test("relative reset seconds fall back to render time with no snapshot", () => {
     const before = Date.now();
     const [window] = deriveWindows({
       "X-Codex-Primary-Used-Percent": "5",
@@ -344,6 +373,58 @@ describe("deriveWindows", () => {
     ]);
   });
 
+  test("a namespaced limit keeps its scope in the label when the length is shared", () => {
+    // The base and code-review limits can both be 7-day windows; a bare length
+    // would collapse two distinct limits into one row.
+    const windows = deriveWindows({
+      "X-Codex-Primary-Used-Percent": "39",
+      "X-Codex-Primary-Window-Minutes": "10080",
+      "X-Codex-Code-Review-Primary-Used-Percent": "80",
+      "X-Codex-Code-Review-Primary-Window-Minutes": "10080",
+    });
+    expect(windows.map((w) => [w.label, w.remainingPercent])).toEqual([
+      ["7일", 61],
+      ["코드 리뷰 7일", 20],
+    ]);
+  });
+
+  test("a scope-wide refusal never overrides a window that reports allowed", () => {
+    // Anthropic sends a credential-level Status plus per-window ones.
+    const windows = deriveWindows({
+      "Anthropic-Ratelimit-Unified-Status": "rejected",
+      "Anthropic-Ratelimit-Unified-5h-Utilization": "0.10",
+      "Anthropic-Ratelimit-Unified-5h-Status": "allowed",
+    });
+    expect(windows.map((w) => [w.label, w.remainingPercent])).toEqual([["5시간", 90]]);
+  });
+
+  test("a namespaced scope refusal reaches the windows under it", () => {
+    // X-Codex-Code-Review-Limit-Reached names the code-review group, not a window.
+    const windows = deriveWindows({
+      "X-Codex-Code-Review-Limit-Reached": "true",
+      "X-Codex-Code-Review-Primary-Used-Percent": "80",
+      "X-Codex-Code-Review-Primary-Window-Minutes": "300",
+      "X-Codex-Primary-Used-Percent": "80",
+      "X-Codex-Primary-Window-Minutes": "300",
+    });
+    expect(windows.map((w) => [w.label, w.remainingPercent, w.note])).toEqual([
+      ["코드 리뷰 5시간", 0, "한도 도달"],
+      ["5시간", 20, null],
+    ]);
+  });
+
+  test("an additional limit refusal respects its namespaced group", () => {
+    const windows = deriveWindows({
+      "X-Codex-Additional-Spark-Allowed": "false",
+      "X-Codex-Additional-Spark-Limit-Name": "Spark",
+      "X-Codex-Additional-Spark-Primary-Used-Percent": "95",
+      "X-Codex-Additional-Spark-Primary-Window-Minutes": "300",
+    });
+    expect(windows.map((w) => [w.label, w.remainingPercent, w.note])).toEqual([
+      ["Spark 5시간", 0, "한도 도달"],
+    ]);
+  });
+
   test("a window the upstream refused never reads as an allowance", () => {
     // Anthropic keeps reporting the utilization it measured on a rejected window.
     expect(deriveWindows({
@@ -417,7 +498,7 @@ describe("renderReport usage section", () => {
     renderReport({ config, tiers: null, tierReason: null, health: new HealthTracker().snapshot(), usage });
 
   test("renders real watermarks instead of the n/a fallback", () => {
-    const out = render({ supported: true, accounts: parseAuthFiles(envelope)!, observedAt: Date.now() });
+    const out = render({ supported: true, accounts: parseAuthFiles(envelope)! });
     expect(out).not.toContain("형식을 알 수 없어");
     expect(out).toContain("codex-user@example.com");
     expect(out).toContain("61%");
@@ -426,14 +507,14 @@ describe("renderReport usage section", () => {
   });
 
   test("a disabled credential is labelled, not shown as an error", () => {
-    const out = render({ supported: true, accounts: parseAuthFiles([disabledFile])!, observedAt: null });
+    const out = render({ supported: true, accounts: parseAuthFiles([disabledFile])! });
     expect(out).toContain("비활성");
     expect(out).not.toContain("오류");
   });
 
   test("the server's error status renders as an error row", () => {
     const [account] = parseAuthFiles([{ ...emptyQuotaFile, status: "error", status_message: "" }])!;
-    const out = render({ supported: true, accounts: [account!], observedAt: null });
+    const out = render({ supported: true, accounts: [account!] });
     expect(out).toContain("오류");
   });
 
@@ -441,14 +522,14 @@ describe("renderReport usage section", () => {
     const [account] = parseAuthFiles([
       { ...claudeFile, quota: { signals: {} }, model_quotas: { "claude-opus-5": { signals: claudeSignals } } },
     ])!;
-    const out = render({ supported: true, accounts: [account!], observedAt: null });
+    const out = render({ supported: true, accounts: [account!] });
     expect(out).toContain("claude-opus-5");
   });
 
   test("a mirrored model snapshot is not repeated under every model", () => {
     // Codex copies one snapshot onto each model; nothing new is added.
     const [account] = parseAuthFiles([codexFile])!;
-    const out = render({ supported: true, accounts: [account!], observedAt: null });
+    const out = render({ supported: true, accounts: [account!] });
     expect(out).toContain("7일");
     expect(out).not.toContain("gpt-6-luna");
   });
@@ -464,7 +545,7 @@ describe("renderReport usage section", () => {
         },
       },
     ])!;
-    const out = render({ supported: true, accounts: [account!], observedAt: null });
+    const out = render({ supported: true, accounts: [account!] });
     expect(out).toContain("claude-sonnet-5 overage 90%");
   });
 
@@ -477,7 +558,7 @@ describe("renderReport usage section", () => {
         },
       },
     ])!;
-    const rows = render({ supported: true, accounts: [account!], observedAt: null })
+    const rows = render({ supported: true, accounts: [account!] })
       .split("\n")
       .filter((line) => line.includes("%"));
     expect(rows.length).toBe(2);
@@ -492,7 +573,7 @@ describe("renderReport usage section", () => {
   });
 
   test("an empty account list says so", () => {
-    expect(render({ supported: true, accounts: [], observedAt: null })).toContain("계정 없음");
+    expect(render({ supported: true, accounts: [] })).toContain("계정 없음");
   });
 });
 
@@ -511,8 +592,8 @@ describe("fetchUsage over a real socket", () => {
         expect(res.supported).toBe(true);
         if (!res.supported) throw new Error(res.reason);
         expect(res.accounts.length).toBe(4);
-        // The reported age is the newest credential watermark, not the listing time.
-        expect(res.observedAt).toBe(Date.parse(codexFile.quota.observed_at));
+        // The reported age is the credential's own watermark, not the listing time.
+        expect(res.accounts[0]!.observedAt).toBe(Date.parse(codexFile.quota.observed_at));
         expect(res.accounts[0]!.windows.length).toBeGreaterThan(0);
       },
     );
