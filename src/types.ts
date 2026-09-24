@@ -38,9 +38,25 @@ export type UsageResult =
 export interface UsageAccount {
   provider: string;
   label: string;
-  status: "ok" | "error" | "unknown";
+  /** `off` = the credential is disabled server-side, not an error. */
+  status: "ok" | "error" | "off";
   detail: string | null;
+  /** Plan / active limit / credits summary from the same snapshot. */
+  meta: string | null;
   windows: UsageWindow[];
+  /** Per-model watermarks, for credentials whose quota is model-scoped. */
+  models: UsageModelQuota[];
+  /**
+   * Oldest snapshot instant behind the rows this account renders.
+   * Null when the credential carries no watermark at all.
+   */
+  observedAt: number | null;
+}
+
+export interface UsageModelQuota {
+  id: string;
+  windows: UsageWindow[];
+  observedAt: number | null;
 }
 
 export interface UsageWindow {
