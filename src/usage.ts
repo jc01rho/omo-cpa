@@ -264,19 +264,21 @@ export function deriveWindows(signals: Record<string, string>): UsageWindow[] {
 
   const out: UsageWindow[] = [];
   for (const [key, group] of groups) {
-    if (group.remaining === null) continue;
+    const rejected = group.rejected || namespaceRejected;
     // A zero-length window is an unused slot (Codex reports one when no
-    // secondary limit applies), not a 100%-remaining allowance.
+    // secondary limit applies), not an allowance or a spent limit.
     if (group.minutes !== null && group.minutes <= 0) continue;
+    // Without a percentage there is normally nothing to show — except a window
+    // the upstream refused, which is spent whether or not it reported a value.
+    if (group.remaining === null && !rejected) continue;
     const limit = matchLimitName(key, limitNames);
     // An absolute instant is authoritative; the relative one is a fallback.
     const resetsAt = group.absolute ??
       (group.relative !== null ? Date.now() + group.relative * 1000 : null);
-    const rejected = group.rejected || namespaceRejected;
     out.push({
       label: windowLabel(key, group.minutes, limit),
       // Never report an allowance the upstream has already refused.
-      remainingPercent: rejected ? 0 : round2(group.remaining),
+      remainingPercent: rejected ? 0 : round2(group.remaining ?? 0),
       resetsAt,
       note: rejected ? "한도 도달" : limit?.name ?? null,
     });
@@ -302,11 +304,10 @@ function isWindowRejected(field: WindowField, value: string): boolean {
 }
 
 function stripNamespace(key: string): string {
-  const scope = key;
   for (const prefix of NAMESPACE_PREFIXES) {
-    if (scope.startsWith(prefix)) return scope.slice(prefix.length);
+    if (key.startsWith(prefix)) return key.slice(prefix.length);
   }
-  return scope;
+  return key;
 }
 
 /**

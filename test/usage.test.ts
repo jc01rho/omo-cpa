@@ -304,6 +304,22 @@ describe("deriveWindows", () => {
     ]);
   });
 
+  test("a rejected window is shown as exhausted even without a utilization", () => {
+    // The refusal itself is the fact; a missing percentage must not hide it.
+    expect(deriveWindows({ "Anthropic-Ratelimit-Unified-5h-Status": "rejected" })[0]).toEqual({
+      label: "5시간", remainingPercent: 0, resetsAt: null, note: "한도 도달",
+    });
+    // Without a refusal, a bare window name stays hidden as before.
+    expect(deriveWindows({ "Anthropic-Ratelimit-Unified-5h-Reset": "1790310427" })).toEqual([]);
+  });
+
+  test("a zero-length rejected window is still an unused slot", () => {
+    expect(deriveWindows({
+      "X-Codex-Secondary-Limit-Reached": "true",
+      "X-Codex-Secondary-Window-Minutes": "0",
+    })).toEqual([]);
+  });
+
   test("a namespaced extra limit is labelled by its limit name", () => {
     const windows = deriveWindows({
       "X-Codex-Additional-Bengalfox-Limit-Name": "Spark",
