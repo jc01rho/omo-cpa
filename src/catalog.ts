@@ -77,7 +77,15 @@ export async function getCatalog(
     try {
       const result = await fetchCatalogUncached(root, apiKey, fetchOptions);
       // A failure stays uncached so the next caller can retry immediately.
-      if (result.ok) cached = { key, result, fetchedAt: Date.now() };
+      if (result.ok) {
+        // A list omission is not evidence that inference stopped working. Keep
+        // known IDs for this connection until the process/cache is reset;
+        // fresh records still replace their previous metadata.
+        const previous = cached?.key === key && cached.result.ok ? cached.result.models : [];
+        const ids = new Set(result.models.map(({ id }) => id));
+        result.models.push(...previous.filter(({ id }) => !ids.has(id)));
+        cached = { key, result, fetchedAt: Date.now() };
+      }
       return result;
     } finally {
       // Only clear the slot this call owns, so a newer fetch is not orphaned.
