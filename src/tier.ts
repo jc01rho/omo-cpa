@@ -54,6 +54,10 @@ export function familyFromId(modelId: string): PrimaryFamily | null {
   for (const family of PRIMARY_FAMILIES) {
     if (matchesFamilyById(modelId, family)) return family;
   }
+  // Provider-prefixed Claude/GPT IDs retain their family identity. Match a
+  // complete segment, never glued names such as "mygpt" or "claudelike".
+  const prefixed = modelId.toLowerCase().match(/(?:^|[\/_.-])(claude|gpt)(?=-|$)/)?.[1];
+  if (prefixed === "claude" || prefixed === "gpt") return prefixed;
   return null;
 }
 
@@ -212,7 +216,7 @@ function decide(id: string, tier: Tier, family: PrimaryFamily | null, reason: st
  *   0. user override            -> wins outright (the user owns their routing)
  *   1. non-chat output modality -> last  (an image model is never a chat fallback)
  *   2. free / zero-cost marker  -> last  (the user's "free pool" definition)
- *   3. family via id            -> primary (senpi semantics)
+ *   3. family via id            -> primary
  *   4. family via displayName   -> primary (the alias rescue)
  *   5. otherwise                -> last
  *

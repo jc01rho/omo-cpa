@@ -49,6 +49,8 @@ export interface ProviderConfig {
 export interface RefreshModelsContext {
   credential: unknown | undefined;
   signal: AbortSignal;
+  allowNetwork?: boolean;
+  force?: boolean;
   publish(entry: { persisted?: string; persist?: unknown }): Promise<void>;
 }
 
@@ -246,7 +248,7 @@ function providerConfig(tier: Tier, models: ProviderModel[], apiKey: string | nu
     ...(apiKey ? { apiKey } : {}),
     api: "openai-responses",
     models,
-    refreshModels: makeRefreshModels(tier),
+    refreshModels: makeRefreshModels(tier, models, { apiKey: apiKey ?? "", baseUrl }),
   };
   // Only the primary provider has oauth: one /login covers both tiers.
   // The last-resort provider borrows the credential stored for 'cliproxyapi'
@@ -262,22 +264,37 @@ function providerConfig(tier: Tier, models: ProviderModel[], apiKey: string | nu
   return { ...common, oauth };
 }
 
-function makeRefreshModels(tier: Tier): (context: RefreshModelsContext) => Promise<ProviderModel[]> {
+function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connection: StoredConnection): (context: RefreshModelsContext) => Promise<ProviderModel[]> {
+  let currentConnection = connection;
+  let generation = 0;
   return async (context) => {
+    const requestGeneration = ++generation;
+    context.signal.throwIfAborted();
     const migration = readMigrationSource();
-    const stored = tier === "last" ? readStoredPrimaryConnection() : null;
-    const apiKey = credentialApiKey(context.credential) ?? stored?.apiKey ?? migration.apiKey;
-    const baseUrl = credentialBaseUrl(context.credential) ?? stored?.baseUrl ?? migration.baseUrl;
+    // readMigrationSource already resolves the shared primary credential and
+    // environment overrides for both tiers; do not bypass those for last.
+    const apiKey = credentialApiKey(context.credential) ?? migration.apiKey;
+    const baseUrl = credentialBaseUrl(context.credential) ?? migration.baseUrl;
+    if (currentConnection.apiKey !== (apiKey ?? "") || currentConnection.baseUrl !== baseUrl) {
+      registeredModels.splice(0);
+      currentConnection = { apiKey: apiKey ?? "", baseUrl };
+    }
     if (!apiKey) {
       await publishBestEffort(context, { kind: "catalog-empty", tier, reason: "추론 키 없음" });
       return [];
     }
+    // Reuse an existing snapshot during senpi's restore phase. Its CLI model
+    // listing only runs this phase, so a cold CPA registration must still load
+    // its catalog, as it did before snapshot preservation was introduced.
+    if (context.allowNetwork === false && registeredModels.length > 0) return [...registeredModels];
     // Both providers refresh independently; the shared cache keeps that from
     // multiplying into a second fan-out of list requests.
-    const fetched = await getCatalog(baseUrl, apiKey, { timeoutMs: 15_000 });
+    const fetched = await getCatalog(baseUrl, apiKey, { timeoutMs: 15_000, force: context.force });
+    context.signal.throwIfAborted();
+    if (requestGeneration !== generation) return [...registeredModels];
     if (!fetched.ok) {
-      await publishBestEffort(context, { kind: "catalog-empty", tier, reason: fetched.reason });
-      return [];
+      await publishBestEffort(context, { kind: "catalog-stale", tier, reason: fetched.reason, idCount: registeredModels.length });
+      return [...registeredModels];
     }
     const store = await loadOverrideStore();
     const built = buildProviderRegistration({
@@ -294,7 +311,12 @@ function makeRefreshModels(tier: Tier): (context: RefreshModelsContext) => Promi
       stats: built.stats,
       mergedAt: Date.now(),
     });
-    return models;
+    context.signal.throwIfAborted();
+    if (requestGeneration !== generation) return [...registeredModels];
+    // registerProvider stores a shallow copy. Preserve this array's identity so
+    // the next senpi recomposition starts with these models, not the initial [].
+    registeredModels.splice(0, registeredModels.length, ...models);
+    return [...registeredModels];
   };
 }
 
