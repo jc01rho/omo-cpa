@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { validateFallbackChains } from "/home/whrho/.nvm/versions/node/v24.14.0/lib/node_modules/omo-ai/node_modules/@code-yeongyu/senpi/dist/core/retry-fallback/validate.js";
+import { loadSenpiValidate } from "../scripts/senpi-validate.ts";
 import {
   generateFallbackChains,
   LAST_RESORT_CHAIN_LIMIT,
@@ -7,6 +7,8 @@ import {
 } from "../src/chain.ts";
 import type { FallbackChain } from "../src/chain.ts";
 import type { CatalogModel, Tier, TierDecision } from "../src/tier-types.ts";
+
+const { validateFallbackChains } = await loadSenpiValidate();
 
 const providers = { primary: "cpa-primary", last: "cpa-last" } as const;
 
