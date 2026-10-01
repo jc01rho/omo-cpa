@@ -280,7 +280,7 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
       currentConnection = { apiKey: apiKey ?? "", baseUrl };
     }
     if (!apiKey) {
-      await publishBestEffort(context, { kind: "catalog-empty", tier, reason: "추론 키 없음" });
+      await publishBestEffort(context, { kind: "catalog-empty", tier, reason: "추론 키 없음" }, registeredModels);
       return [];
     }
     // Reuse an existing snapshot during senpi's restore phase. Its CLI model
@@ -293,7 +293,7 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
     context.signal.throwIfAborted();
     if (requestGeneration !== generation) return [...registeredModels];
     if (!fetched.ok) {
-      await publishBestEffort(context, { kind: "catalog-stale", tier, reason: fetched.reason, idCount: registeredModels.length });
+      await publishBestEffort(context, { kind: "catalog-stale", tier, reason: fetched.reason, idCount: registeredModels.length }, registeredModels);
       return [...registeredModels];
     }
     const store = await loadOverrideStore();
@@ -310,7 +310,7 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
       idCount: models.length,
       stats: built.stats,
       mergedAt: Date.now(),
-    });
+    }, models);
     context.signal.throwIfAborted();
     if (requestGeneration !== generation) return [...registeredModels];
     // registerProvider stores a shallow copy. Preserve this array's identity so
@@ -345,9 +345,16 @@ export function readStoredPrimaryCredential(path?: string): string | null {
   return readStoredPrimaryConnection(path)?.apiKey ?? null;
 }
 
-async function publishBestEffort(context: RefreshModelsContext, persist: unknown): Promise<void> {
+async function publishBestEffort(
+  context: RefreshModelsContext,
+  persist: Record<string, unknown>,
+  models: ProviderModel[],
+): Promise<void> {
   try {
-    await context.publish({ persist });
+    // senpi restores a stored entry with `entry.models.filter(...)`, so every
+    // published payload must carry a models array; one without it makes the
+    // next cold start throw inside the restore and drop the whole catalog.
+    await context.publish({ persist: { models, ...persist } });
   } catch {
     // Registry persistence is best-effort; the in-memory return remains usable.
   }
