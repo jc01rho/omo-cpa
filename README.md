@@ -1,6 +1,6 @@
 # omo-cpa
 
-omo(senpi)용 [CLI Proxy API](https://github.com/router-for-me/CLIProxyAPI) 플러그인입니다. CPA가 내려주는 모델 목록을 주력 프로바이더 `cliproxyapi`와 최후수단 프로바이더 `cliproxyapi-last`로 나눠 등록하고, 세션 안에서 상태, 계정 사용량, 폴백 체인을 다룹니다.
+omo(senpi)용 [CLIProxyAPIPlus](https://github.com/jc01rho/CLIProxyAPIPlus) 플러그인입니다. CPA가 내려주는 모델 목록을 주력 프로바이더 `cliproxyapi`와 최후수단 프로바이더 `cliproxyapi-last`로 나눠 등록하고, 세션 안에서 상태, 계정 사용량, 폴백 체인을 다룹니다.
 
 저장소: <https://github.com/jc01rho/omo-cpa>
 
@@ -17,7 +17,7 @@ omo(senpi)용 [CLI Proxy API](https://github.com/router-for-me/CLIProxyAPI) 플�
 ## 필요한 것
 
 - [Bun](https://bun.sh)
-- 실행 중인 CLI Proxy API. 기본 주소는 `http://127.0.0.1:8317`입니다.
+- 실행 중인 [CLIProxyAPIPlus](https://github.com/jc01rho/CLIProxyAPIPlus). 기본 주소는 `http://127.0.0.1:8317`입니다.
 - omo(senpi). 이 패키지는 omo 확장으로 로드됩니다.
 
 ## 설치
