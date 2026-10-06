@@ -124,19 +124,6 @@ export const STABLE_LAST_RESORT_IDS = [
   "lower-coding",
 ] as const;
 
-const DECLARED_OVERRIDES: Readonly<Record<string, {
-  contextWindow: number;
-  maxTokens: number;
-  input: ("text" | "image" | "video")[];
-  name?: string;
-  upstreamModelId?: string;
-}>> = {
-  "gpt-spark": { contextWindow: 8192, maxTokens: 1024, input: ["text", "image"], name: "GPT Spark", upstreamModelId: "solar-mini4-preview" },
-  "composer-2.5": { contextWindow: 8192, maxTokens: 1024, input: ["text", "image"], name: "Composer 2.5", upstreamModelId: "poolside/laguna-s-2.1-free" },
-  "MiniMax-M3": { contextWindow: 8192, maxTokens: 1024, input: ["text", "image"], name: "MiniMax-M3", upstreamModelId: "MiniMax-M3" },
-  "open-muse": { contextWindow: 8192, maxTokens: 1024, input: ["text", "image"], name: "Open Muse", upstreamModelId: "muse-spark-1.3-contributor-free" },
-};
-
 export interface Stats {
   realContext: number;
   defaultedContext: number;
@@ -150,33 +137,11 @@ export const MAX_TOKENS_CEIL = 250000;
 export const DEFAULT_CONTEXT_WINDOW = 8192;
 export const DEFAULT_MAX_TOKENS = 4096;
 export const DEFAULT_MAX_TOKENS_FOR_DEFAULT_CONTEXT = 2048;
-export { DECLARED_OVERRIDES };
 
-/**
- * Declared aliases are callable even when absent from every listing, so they
- * must still be registered. Their cosmetic id is not their identity: the
- * synthesized row carries the upstream id and the classifier judges that.
- */
-function appendDeclaredAliases(catalog: readonly CatalogModel[]): CatalogModel[] {
-  const models = catalog.map((model) => {
-    const upstreamModelId = DECLARED_OVERRIDES[model.id]?.upstreamModelId;
-    return upstreamModelId === undefined ? { ...model } : { ...model, upstreamModelId };
-  });
+/** Keep the stable last-resort tail even when a volatile catalog omits it. */
+function appendStableLastResorts(catalog: readonly CatalogModel[]): CatalogModel[] {
+  const models = [...catalog];
   const present = new Set(models.map(({ id }) => id));
-  for (const [id, declared] of Object.entries(DECLARED_OVERRIDES)) {
-    if (present.has(id)) continue;
-    models.push({
-      id,
-      ownedBy: null,
-      displayName: declared.upstreamModelId ?? id,
-      upstreamModelId: declared.upstreamModelId,
-      contextLength: null,
-      maxTokens: null,
-      inputModalities: declared.input.map((item) => item.toUpperCase()),
-      outputModalities: null,
-      thinking: null,
-    });
-  }
   for (const id of STABLE_LAST_RESORT_IDS) {
     if (present.has(id)) continue;
     models.push({
@@ -195,7 +160,7 @@ function appendDeclaredAliases(catalog: readonly CatalogModel[]): CatalogModel[]
 
 /** Build both disjoint provider model sets from the one merged endpoint catalog. */
 export function buildProviderRegistration(data: ProviderRegistrationData): TieredProviderData {
-  const catalog = appendDeclaredAliases(data.catalog);
+  const catalog = appendStableLastResorts(data.catalog);
   const report = buildTierReport(catalog, data.overrides);
   const baseUrl = toRoot(data.baseUrl ?? DEFAULT_BASE_URL);
   const stats: Stats = {
@@ -380,7 +345,6 @@ function toProviderModel(
   stats: Stats,
   baseUrl: string,
 ): ProviderModel {
-  const declared = DECLARED_OVERRIDES[model.id];
   const stableLast = STABLE_LAST_RESORT_IDS.includes(model.id as typeof STABLE_LAST_RESORT_IDS[number]);
   const curated = contextOverrides.get(model.id);
   let contextWindow: number;
@@ -397,23 +361,20 @@ function toProviderModel(
   } else if (curated?.contextWindow) {
     contextWindow = curated.contextWindow;
     stats.realContext++;
-  } else if (declared) {
-    contextWindow = declared.contextWindow;
-    stats.defaultedContext++;
   } else {
     contextWindow = DEFAULT_CONTEXT_WINDOW;
     stats.defaultedContext++;
   }
   contextWindow = Math.min(contextWindow, 2_000_000);
 
-  const reportedMax = stableLast ? 65_536 : curated?.maxTokens || model.maxTokens || declared?.maxTokens || 0;
+  const reportedMax = stableLast ? 65_536 : curated?.maxTokens || model.maxTokens || 0;
   let maxTokens = reportedMax > 0
     ? Math.min(reportedMax, contextWindow - 1, MAX_TOKENS_CEIL)
     : contextWindow <= DEFAULT_CONTEXT_WINDOW ? DEFAULT_MAX_TOKENS_FOR_DEFAULT_CONTEXT : DEFAULT_MAX_TOKENS;
   if (maxTokens < reportedMax) stats.clampedMaxTokens++;
   if (maxTokens <= 0) maxTokens = 1;
 
-  const input = stableLast ? ["text", "image"] as const : inputModalities(model.inputModalities, declared?.input);
+  const input = stableLast ? ["text", "image"] as const : inputModalities(model.inputModalities, undefined);
   if (model.inputModalities) stats.inputFromGemini++;
   else stats.inputFromDefault++;
 
@@ -424,15 +385,15 @@ function toProviderModel(
 
   return {
     id: model.id,
-    name: (declared?.name || model.displayName?.replace(/^\*/, "") || model.id),
-    reasoning: stableLast || model.thinking === true || !!declared,
+    name: (model.displayName?.replace(/^\*/, "") || model.id),
+    reasoning: stableLast || model.thinking === true,
     input: [...input],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
     maxTokens,
     api,
     baseUrl: `${baseUrl}${endpoint.baseUrlSuffix}`,
-    upstreamModelId: declared?.upstreamModelId,
+    upstreamModelId: model.upstreamModelId,
     thinkingLevelMap: model.id.startsWith("gpt-5.6") ? {
       off: "none", minimal: "minimal", low: "low", medium: "medium",
       high: "high", xhigh: "xhigh", max: "max",

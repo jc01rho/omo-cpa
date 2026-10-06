@@ -23,7 +23,6 @@ import {
   DEFAULT_CONTEXT_WINDOW,
   DEFAULT_MAX_TOKENS_FOR_DEFAULT_CONTEXT,
   DEFAULT_MAX_TOKENS,
-  DECLARED_OVERRIDES,
   getApiKey,
   refreshToken,
   login,
@@ -93,31 +92,6 @@ describe("metadata merge — safe defaults and no invented numbers", () => {
 
   test("DEFAULT_MAX_TOKENS is a labelled default", () => {
     expect(DEFAULT_MAX_TOKENS).toBe(4096);
-  });
-
-  test("declared overrides use conservative defaults for aliases not in listings", () => {
-    const spark = DECLARED_OVERRIDES["gpt-spark"];
-    const composer = DECLARED_OVERRIDES["composer-2.5"];
-    if (!spark || !composer) throw new Error("sanity: declared overrides missing");
-    expect(spark.contextWindow).toBe(8192);
-    expect(spark.upstreamModelId).toBe("solar-mini4-preview");
-    expect(composer.upstreamModelId).toBe("poolside/laguna-s-2.1-free");
-  });
-
-  test("declared overrides contain exactly the 4 unlisted aliases", () => {
-    const keys = Object.keys(DECLARED_OVERRIDES);
-    expect(keys).toContain("gpt-spark");
-    expect(keys).toContain("composer-2.5");
-    expect(keys).toContain("MiniMax-M3");
-    expect(keys).toContain("open-muse");
-    expect(keys).toHaveLength(4);
-  });
-
-  test("each declared override has a conservative contextWindow (<= 8192)", () => {
-    for (const ov of Object.values(DECLARED_OVERRIDES)) {
-      expect(ov.contextWindow).toBeLessThanOrEqual(8192);
-      expect(ov.maxTokens).toBeLessThanOrEqual(ov.contextWindow - 1);
-    }
   });
 
   test("MAX_TOKENS_CEIL sanity > 0", () => {
@@ -232,7 +206,7 @@ describe("tier-separated provider registration", () => {
     expect([...primaryIds].filter((id) => lastIds.has(id))).toEqual([]);
     expect(primaryIds.has("gpt-5.6")).toBe(true);
     for (const id of ["gpt-spark", "composer-2.5", "MiniMax-M3", "open-muse"]) {
-      expect(lastIds.has(id)).toBe(true);
+      expect(lastIds.has(id)).toBe(false);
       expect(primaryIds.has(id)).toBe(false);
     }
     expect(lastIds.has("cheap-model")).toBe(true);
@@ -399,7 +373,7 @@ function aliasCatalog(id: string): CatalogModel {
   };
 }
 
-describe("declared alias tier follows upstream identity, not the alias id", () => {
+describe("models absent from the catalog stay unregistered", () => {
   function tiersFor(catalog: CatalogModel[]) {
     const tiered = buildProviderRegistration({
       catalog,
@@ -413,25 +387,12 @@ describe("declared alias tier follows upstream identity, not the alias id", () =
     };
   }
 
-  test("gpt-spark is last: its id says gpt but its upstream is not a primary family", () => {
-    const { primary, last } = tiersFor([aliasCatalog("gpt-spark"), aliasCatalog("gpt-5.6-sol")]);
-    expect(primary.has("gpt-5.6-sol")).toBe(true);
-    expect(primary.has("gpt-spark")).toBe(false);
-    expect(last.has("gpt-spark")).toBe(true);
-  });
-
-  test("an alias whose upstream is free stays last even when its id names a primary family", () => {
-    const { primary, last } = tiersFor([aliasCatalog("open-muse"), aliasCatalog("muse-spark-1.1")]);
-    expect(primary.has("open-muse")).toBe(false);
-    expect(last.has("open-muse")).toBe(true);
-  });
-
-  test("declared aliases absent from the catalog are still registered in their upstream tier", () => {
+  test("gpt-spark, composer-2.5, MiniMax-M3, and open-muse are not synthesized", () => {
     const { catalog, primary, last } = tiersFor([aliasCatalog("gpt-5.6-sol")]);
     for (const id of ["gpt-spark", "composer-2.5", "MiniMax-M3", "open-muse"]) {
-      expect(catalog.has(id)).toBe(true);
+      expect(catalog.has(id)).toBe(false);
       expect(primary.has(id)).toBe(false);
-      expect(last.has(id)).toBe(true);
+      expect(last.has(id)).toBe(false);
     }
   });
 

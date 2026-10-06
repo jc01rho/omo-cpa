@@ -6,15 +6,11 @@ import type { FallbackChain } from "../src/chain.ts";
 import { fetchCatalog, selectEndpoint } from "../src/endpoint.ts";
 import {
   buildProviderRegistration,
-  DECLARED_OVERRIDES,
   LAST_RESORT_PROVIDER_NAME,
   PROVIDER_NAME,
   readMigrationSource,
 } from "../src/provider.ts";
 import {
-  familyFromDisplayName,
-  familyFromId,
-  hasFreeMarker,
   loadOverrideStore,
   toOverrideMap,
 } from "../src/tier.ts";
@@ -114,29 +110,6 @@ async function main(): Promise<void> {
     }
   }
 
-  const decisionsById = new Map(report.decisions.map((decision) => [decision.id, decision]));
-  let declaredAliasesPresent = 0;
-  let declaredAliasPrimaryViolations = 0;
-  for (const [id, declared] of Object.entries(DECLARED_OVERRIDES)) {
-    const decision = decisionsById.get(id);
-    if (!decision) continue;
-    declaredAliasesPresent++;
-    const upstreamModelId = declared.upstreamModelId;
-    if (decision.tier !== "primary" || upstreamModelId === undefined) continue;
-    const upstream = {
-      id: upstreamModelId,
-      ownedBy: null,
-      displayName: upstreamModelId,
-      contextLength: null,
-      maxTokens: null,
-      inputModalities: null,
-      outputModalities: null,
-      thinking: null,
-    };
-    const family = familyFromId(upstreamModelId) ?? familyFromDisplayName(upstreamModelId);
-    if (family === null || hasFreeMarker(upstream)) declaredAliasPrimaryViolations++;
-  }
-
   const warnings = validateFallbackChains(
     chainSettings(chains),
     registryFor(tiered.catalog, routable),
@@ -153,8 +126,6 @@ async function main(): Promise<void> {
   const maximumFamilyCount = familyCounts.length === 0 ? 0 : Math.max(...familyCounts);
   const minimumRequiredFamilies = requiredFamilyCounts.length === 0 ? 0 : Math.min(...requiredFamilyCounts);
   const maximumRequiredFamilies = requiredFamilyCounts.length === 0 ? 0 : Math.max(...requiredFamilyCounts);
-  const gptSparkTier = decisionsById.get("gpt-spark")?.tier ?? "absent (not synthesized)";
-  console.log(`declared aliases present=${declaredAliasesPresent}; invalid primary aliases=${declaredAliasPrimaryViolations}; gpt-spark=${gptSparkTier}`);
   console.log(`primary families present=${presentFamilies.size}/${PRIMARY_FAMILIES.length} (${[...presentFamilies].sort().join(",")})`);
   console.log(`families per chain=${minimumFamilyCount}-${maximumFamilyCount}; required=${minimumRequiredFamilies}-${maximumRequiredFamilies}; singleton-family targets=${singletonFamilyTargets}; coverage violations=${familyCoverageViolations}`);
   console.log(`chains checked: ${chains.length}; chatUnfit leaks=${chatUnfitLeaks}; order violations=${orderViolations}; tails present=${tailsPresent}/${chains.length}`);
@@ -170,7 +141,6 @@ async function main(): Promise<void> {
     || chatUnfitLeaks > 0
     || orderViolations > 0
     || familyCoverageViolations > 0
-    || declaredAliasPrimaryViolations > 0
   ) process.exitCode = 1;
 }
 

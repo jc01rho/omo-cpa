@@ -9,7 +9,7 @@ omo(senpi)용 [CLIProxyAPIPlus](https://github.com/jc01rho/CLIProxyAPIPlus) 플�
 - **프로바이더 둘.** `cliproxyapi`가 주력입니다. `cliproxyapi-last`는 직접 고를 때만 쓰는 최후수단이고, senpi의 암시적 패밀리 확장에서는 빠집니다. `/login cliproxyapi` 한 번으로 둘 다 인증합니다.
 - **라이브 카탈로그.** OpenAI `GET /v1/models`, Anthropic `GET /v1/models`, Gemini `GET /v1beta/models`, Codex `GET /v1/models?client_version=cpa`를 한 목록으로 합칩니다. 성공한 목록은 기본 5분간 캐시하고, 동시에 들어온 조회는 요청 한 번으로 묶습니다.
 - **티어.** 주력 패밀리는 muse, gpt, claude, gemini, glm, deepseek, grok입니다. id만으로 부족하면 displayName의 머리 단어로 가릅니다. `fable`처럼 별칭만 있는 모델도 이렇게 주력으로 올라갑니다. `free` 표식이 있거나 이미지, 음성, 임베딩 같은 비채팅 모델은 채팅 폴백 체인에서 빠집니다. `/cpa tier`로 저장한 수동 지정은 지금 카탈로그에 있는 모델에만 적용되고, 없는 id는 비활성으로만 보입니다.
-- **목록 밖에서도 등록.** `gpt-spark`, `composer-2.5`, `MiniMax-M3`, `open-muse`는 네 목록에 없어도 등록합니다. 티어는 별칭 id가 아니라 각 별칭의 upstream 모델로 판정합니다. `higher-coding`과 `lower-coding`은 목록에서 빠져도 최후수단 꼬리로 남아, 기동 검증이 빈 셀렉터를 보지 않게 합니다.
+- **시작 꼬리.** `higher-coding`과 `lower-coding`은 목록에서 빠져도 최후수단 꼬리로 남아, 기동 검증이 빈 셀렉터를 보지 않게 합니다.
 - **헬스.** CPA로 보낸 응답만 집계합니다. HTTP 429는 요청 제한, 5xx가 연속 3회면 down입니다. 4xx는 서버 장애로 세지 않습니다. 핸들러 오류는 삼키므로 플러그인 버그가 세션을 죽이지 않습니다.
 - **사용량.** 관리 키가 있을 때만 `GET /v0/management/auth-files`를 읽습니다. 키가 없거나 거부되면 숫자를 추정하지 않고 이유만 보여 줍니다.
 - **비밀.** 리포트와 `--json` 출력에서 키는 빠집니다. 관리 키는 omo 설정 파일이 아니라 사용자만 읽는 파일에 둡니다.
