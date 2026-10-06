@@ -1,7 +1,7 @@
 {
   "name": "omo-cpa",
   "version": "0.1.0",
-  "description": "omo(senpi) plugin for CLI Proxy API (CPA): model drift guard, health circuit breaker, CPA account usage.",
+  "description": "omo(senpi) plugin for CLI Proxy API: primary and last-resort model tiers, a health circuit breaker, and CPA account usage.",
   "type": "module",
   "bin": {
     "omo-cpa": "bin/omo-cpa.ts"
@@ -19,6 +19,14 @@
     "README.md"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jc01rho/omo-cpa.git"
+  },
+  "homepage": "https://github.com/jc01rho/omo-cpa#readme",
+  "bugs": {
+    "url": "https://github.com/jc01rho/omo-cpa/issues"
+  },
   "devDependencies": {
     "@types/bun": "latest",
     "typescript": "^5.6.0"
