@@ -220,10 +220,10 @@ function decide(id: string, tier: Tier, family: PrimaryFamily | null, reason: st
  *   4. family via displayName   -> primary (the alias rescue)
  *   5. otherwise                -> last
  *
- * A declared alias is the exception to rule 3: its own id is a cosmetic label
- * (`gpt-spark` merely looks like gpt) and its real identity is the upstream id.
- * Such an alias is classified exactly as if the upstream id were the model, so
- * a free upstream stays last and a genuine primary-family upstream stays primary.
+ * A model that carries an upstream id is the exception to rule 3: its own id
+ * is a cosmetic label and its real identity is the upstream id. It is classified
+ * exactly as if the upstream id were the model, so a free upstream stays last
+ * and a genuine primary-family upstream stays primary.
  */
 function classifyOne(m: CatalogModel, override: Tier | undefined, upstreamId?: string): TierDecision {
   if (override) {
