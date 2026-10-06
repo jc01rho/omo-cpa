@@ -184,3 +184,17 @@ test("a failed first fetch does not invent a usable catalog", async () => {
   expect(await refresh()).toEqual([]);
   expect(registeredIds()).toEqual([]);
 });
+
+test("published store entries carry a models array for senpi's restore path", async () => {
+  const persisted: Record<string, unknown>[] = [];
+  await refresh({
+    publish: async (publication) => {
+      persisted.push(publication.persist as Record<string, unknown>);
+    },
+  });
+  expect(persisted.length).toBe(2);
+  for (const entry of persisted) {
+    expect(Array.isArray(entry["models"])).toBe(true);
+    expect((entry["models"] as unknown[]).length).toBeGreaterThan(0);
+  }
+});

@@ -29,6 +29,7 @@ import {
   LAST_RESORT_PROVIDER_NAME,
   loadProviderData,
   migrateConfigBackground,
+  pruneUnrestorableStoreEntries,
   PROVIDER_NAME,
   readStoredPrimaryConnection,
   registerCpaProvider,
@@ -70,6 +71,7 @@ interface State {
 export interface OmoCpaOptions {
   overridePath?: string;
   managementKeyPath?: string;
+  modelsStorePath?: string;
   loadProviderData?: (force?: boolean) => Promise<ProviderData>;
 }
 
@@ -93,6 +95,8 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
     }
     migrateConfigBackground();
   }
+
+  pruneUnrestorableStoreEntries(options.modelsStorePath);
 
   // Run registration immediately so `/login` and the model catalog are available
   // as soon as omo's runner binds context. This is safe per the types.d.ts guarantee:

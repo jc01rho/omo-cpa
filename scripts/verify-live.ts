@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /** Live CPA tier proof. Reads the existing key but never prints it. */
-import { validateFallbackChains } from "/home/whrho/.nvm/versions/node/v24.14.0/lib/node_modules/omo-ai/node_modules/@code-yeongyu/senpi/dist/core/retry-fallback/validate.js";
+import { loadSenpiValidate } from "./senpi-validate.ts";
 import { generateFallbackChains } from "../src/chain.ts";
 import type { FallbackChain } from "../src/chain.ts";
 import { fetchCatalog, selectEndpoint } from "../src/endpoint.ts";
@@ -16,6 +16,8 @@ import {
 } from "../src/tier.ts";
 import { PRIMARY_FAMILIES } from "../src/tier-types.ts";
 import type { CatalogModel, TierDecision } from "../src/tier-types.ts";
+
+const { validateFallbackChains } = await loadSenpiValidate();
 
 function requiredRoot(): string {
   const value = process.env["OMO_CPA_BASE_URL"]?.trim();

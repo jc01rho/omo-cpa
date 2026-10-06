@@ -187,7 +187,7 @@ describe("parseAuthFiles", () => {
         // The envelope timestamp is regenerated per request, so it always reads "0분 전".
         observed_at: new Date().toISOString(),
         files: [
-          { ...codexFile, quota: { observed_at: stale, signals: codexSignals } },
+          { ...codexFile, model_quotas: undefined, quota: { observed_at: stale, signals: codexSignals } },
           { ...claudeFile, quota: { observed_at: fresh, signals: claudeSignals } },
         ],
       }),

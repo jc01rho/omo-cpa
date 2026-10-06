@@ -1,5 +1,5 @@
 /** CPA provider registration and catalog-to-runtime model conversion. */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { selectEndpoint } from "./endpoint.ts";
@@ -245,7 +245,7 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
       currentConnection = { apiKey: apiKey ?? "", baseUrl };
     }
     if (!apiKey) {
-      await publishBestEffort(context, { kind: "catalog-empty", tier, reason: "추론 키 없음" });
+      await publishBestEffort(context, { kind: "catalog-empty", tier, reason: "추론 키 없음" }, registeredModels);
       return [];
     }
     // Reuse an existing snapshot during senpi's restore phase. Its CLI model
@@ -258,7 +258,7 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
     context.signal.throwIfAborted();
     if (requestGeneration !== generation) return [...registeredModels];
     if (!fetched.ok) {
-      await publishBestEffort(context, { kind: "catalog-stale", tier, reason: fetched.reason, idCount: registeredModels.length });
+      await publishBestEffort(context, { kind: "catalog-stale", tier, reason: fetched.reason, idCount: registeredModels.length }, registeredModels);
       return [...registeredModels];
     }
     const store = await loadOverrideStore();
@@ -275,7 +275,7 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
       idCount: models.length,
       stats: built.stats,
       mergedAt: Date.now(),
-    });
+    }, models);
     context.signal.throwIfAborted();
     if (requestGeneration !== generation) return [...registeredModels];
     // registerProvider stores a shallow copy. Preserve this array's identity so
@@ -288,6 +288,43 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
 export interface StoredConnection {
   apiKey: string;
   baseUrl: string;
+}
+
+/**
+ * Drop our own stored catalog entry when senpi cannot restore it.
+ *
+ * senpi replays the persisted payload through `entry.models.filter(...)` before
+ * it calls `refreshModels`, so an entry without a `models` array throws there:
+ * the provider keeps only what `models.json` declares for that whole session,
+ * and because the entry stays on disk every later boot repeats it. Removing it
+ * costs one catalog fetch. Other providers' entries are never touched.
+ */
+export function pruneUnrestorableStoreEntries(
+  path: string | undefined = defaultModelsStorePath(),
+  providerIds: readonly string[] = [PROVIDER_NAME, LAST_RESORT_PROVIDER_NAME],
+): string[] {
+  try {
+    if (!path || !existsSync(path)) return [];
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+    const store = parsed as Record<string, unknown>;
+    const removed = providerIds.filter((id) => Object.hasOwn(store, id) && !hasRestorableModels(store[id]));
+    if (removed.length === 0) return [];
+    for (const id of removed) delete store[id];
+    writeFileSync(path, JSON.stringify(store, null, 2));
+    return [...removed];
+  } catch {
+    return [];
+  }
+}
+
+function hasRestorableModels(entry: unknown): boolean {
+  return typeof entry === "object" && entry !== null && Array.isArray((entry as { models?: unknown }).models);
+}
+
+function defaultModelsStorePath(): string {
+  const override = process.env["CODING_AGENT_DIR"]?.trim();
+  return join(override && override.length > 0 ? override : join(homedir(), ".omo", "agent"), "models-store.json");
 }
 
 /** Read the connection that omo stored after `/login cliproxyapi`. */
@@ -310,9 +347,16 @@ export function readStoredPrimaryCredential(path?: string): string | null {
   return readStoredPrimaryConnection(path)?.apiKey ?? null;
 }
 
-async function publishBestEffort(context: RefreshModelsContext, persist: unknown): Promise<void> {
+async function publishBestEffort(
+  context: RefreshModelsContext,
+  persist: Record<string, unknown>,
+  models: ProviderModel[],
+): Promise<void> {
   try {
-    await context.publish({ persist });
+    // senpi restores a stored entry with `entry.models.filter(...)`, so every
+    // published payload must carry a models array; one without it makes the
+    // next cold start throw inside the restore and drop the whole catalog.
+    await context.publish({ persist: { models, ...persist } });
   } catch {
     // Registry persistence is best-effort; the in-memory return remains usable.
   }
