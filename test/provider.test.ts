@@ -178,6 +178,43 @@ function catalogModel(id: string, extra: Partial<CatalogModel> = {}): CatalogMod
   };
 }
 
+describe("per-model cost broadcast", () => {
+  test("a resolved cost replaces the zero the plugin used to publish", () => {
+    const built = buildProviderRegistration({
+      catalog: [catalogModel("gpt-6-astra"), catalogModel("claude-opus-5")],
+      contextOverrides: new Map(),
+      overrides: {},
+      costs: new Map([
+        ["gpt-6-astra", { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 }],
+      ]),
+    });
+    const byId = new Map([...built.primaryModels, ...built.lastModels].map((m) => [m.id, m]));
+    expect(byId.get("gpt-6-astra")?.cost).toEqual({ input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 });
+    expect(byId.get("claude-opus-5")?.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  });
+
+  test("no costs map leaves every model at zero, as before", () => {
+    const built = buildProviderRegistration({
+      catalog: [catalogModel("gpt-6-astra")],
+      contextOverrides: new Map(),
+      overrides: {},
+    });
+    expect(built.primaryModels[0]?.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+  });
+
+  test("the cost object on the registered model is a copy, not the shared map value", () => {
+    const cost = { input: 3, output: 6, cacheRead: 0.3, cacheWrite: 3.75 };
+    const built = buildProviderRegistration({
+      catalog: [catalogModel("gpt-6-astra")],
+      contextOverrides: new Map(),
+      overrides: {},
+      costs: new Map([["gpt-6-astra", cost]]),
+    });
+    expect(built.primaryModels[0]?.cost).toEqual(cost);
+    expect(built.primaryModels[0]?.cost).not.toBe(cost);
+  });
+});
+
 describe("tier-separated provider registration", () => {
   test("registers exactly two disjoint providers with last-resort excluded from implicit fallback", () => {
     const registered: Array<{ name: string; config: ProviderConfig }> = [];

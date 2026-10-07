@@ -10,6 +10,7 @@ omo(senpi)용 [CLIProxyAPIPlus](https://github.com/jc01rho/CLIProxyAPIPlus) 플�
 - **라이브 카탈로그.** OpenAI `GET /v1/models`, Anthropic `GET /v1/models`, Gemini `GET /v1beta/models`, Codex `GET /v1/models?client_version=cpa`를 한 목록으로 합칩니다. 성공한 목록은 기본 5분간 캐시하고, 동시에 들어온 조회는 요청 한 번으로 묶습니다.
 - **티어.** 주력 패밀리는 muse, gpt, claude, gemini, glm, deepseek, grok입니다. id만으로 부족하면 displayName의 머리 단어로 가릅니다. `fable`처럼 별칭만 있는 모델도 이렇게 주력으로 올라갑니다. `free` 표식이 있거나 이미지, 음성, 임베딩 같은 비채팅 모델은 채팅 폴백 체인에서 빠집니다. `/cpa tier`로 저장한 수동 지정은 지금 카탈로그에 있는 모델에만 적용되고, 없는 id는 비활성으로만 보입니다.
 - **시작 꼬리.** `higher-coding`과 `lower-coding`은 목록에서 빠져도 최후수단 꼬리로 남아, 기동 검증이 빈 셀렉터를 보지 않게 합니다.
+- **가격.** 모델별 호출 가격을 [models.dev](https://models.dev) 카탈로그에서 받아 등록하는 모델의 `cost`(USD / 백만 토큰: input, output, cacheRead, cacheWrite)로 브로드캐스트합니다. CPA 서버의 어느 목록에도 가격이 없어서(openai·anthropic·gemini·codex 네 목록과 관리 API 모두 확인) 외부 카탈로그를 씁니다. 모델 id가 가족 없이 낯설거나 공식 벤더 행이 없으면 0으로 두고 추측하지 않습니다. `fable`·`parrot`처럼 별칭만 있는 모델은 displayName으로 정체를 찾아 가격을 붙입니다. 6시간 캐시하고 `/cpa refresh`가 가격도 다시 받습니다.
 - **헬스.** CPA로 보낸 응답만 집계합니다. HTTP 429는 요청 제한, 5xx가 연속 3회면 down입니다. 4xx는 서버 장애로 세지 않습니다. 핸들러 오류는 삼키므로 플러그인 버그가 세션을 죽이지 않습니다.
 - **사용량.** 관리 키가 있을 때만 `GET /v0/management/auth-files`를 읽습니다. 키가 없거나 거부되면 숫자를 추정하지 않고 이유만 보여 줍니다.
 - **비밀.** 리포트와 `--json` 출력에서 키는 빠집니다. 관리 키는 omo 설정 파일이 아니라 사용자만 읽는 파일에 둡니다.
@@ -81,12 +82,16 @@ bun run start -- --help
 | `OMO_CPA_API_KEY` | 없음 | 추론 키. 세션에서는 `/login cliproxyapi`로 저장된 키가 이 값보다 우선합니다. CLI는 이 변수만 봅니다. |
 | `OMO_CPA_MANAGEMENT_KEY` | 없음 | 관리 API 키. 있으면 파일보다 우선하고, 계정별 사용량이 켜집니다. |
 | `OMO_CPA_CATALOG_TTL_MS` | `300000` | 카탈로그 캐시(밀리초). `0`이면 매번 다시 받습니다. |
+| `OMO_CPA_PRICING_TTL_MS` | `21600000` | 모델 가격 카탈로그 캐시(밀리초, 기본 6시간). `0`이면 매번 다시 받습니다. |
+| `OMO_CPA_PRICING_URL` | `https://models.dev/api.json` | 가격 카탈로그 URL. 사내 미러가 있으면 여기를 바꿉니다. |
 
 | 경로 | 내용 |
 | --- | --- |
 | `~/.omo/agent/extensions/omo-cpa.ts` | 설치 로더. 지우면 언로드됩니다. |
 | `~/.omo/agent/cpa-management-key` | 관리 키. 모드 0600이며 암호화하지 않습니다. |
 | `~/.cache/omo-cpa/tier-overrides.json` | `/cpa tier`로 저장한 수동 티어. |
+
+가격 카탈로그는 모델 한도를 받는 것과 같은 [models.dev](https://models.dev/api.json)에서 오며, 캐시는 프로세스 메모리에만 두고 파일로 저장하지 않습니다.
 
 상태 줄 키는 `omo-cpa`입니다.
 

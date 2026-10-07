@@ -6,6 +6,8 @@ import { selectEndpoint } from "./endpoint.ts";
 import { getCatalog } from "./catalog.ts";
 import { DEFAULT_BASE_URL, loadConfig, toRoot } from "./config.ts";
 import { redact } from "./redact.ts";
+import { getPricingIndex, resolveCatalogCosts, ZERO_COST } from "./pricing.ts";
+import type { ModelCost } from "./pricing.ts";
 import { buildTierReport, loadOverrideStore, toOverrideMap } from "./tier.ts";
 import type { OverrideMap, TierReport } from "./tier.ts";
 import type { CatalogModel, Tier } from "./tier-types.ts";
@@ -73,6 +75,8 @@ export interface Credentials {
 export interface ProviderData {
   catalog: CatalogModel[];
   contextOverrides: Map<string, { contextWindow: number; maxTokens: number }>;
+  /** Per-model price by id, when the pricing catalog resolved one. */
+  costs?: ReadonlyMap<string, ModelCost>;
   baseUrl?: string;
 }
 
@@ -172,7 +176,9 @@ export function buildProviderRegistration(data: ProviderRegistrationData): Tiere
     inputFromDefault: 0,
   };
   const converted = new Map<string, ProviderModel>();
-  for (const model of catalog) converted.set(model.id, toProviderModel(model, data.contextOverrides, stats, baseUrl));
+  for (const model of catalog) {
+    converted.set(model.id, toProviderModel(model, data.contextOverrides, stats, baseUrl, data.costs?.get(model.id)));
+  }
 
   const select = (ids: readonly { id: string }[]): ProviderModel[] => ids.flatMap(({ id }) => {
     const model = converted.get(id);
@@ -253,7 +259,13 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
     // its catalog, as it did before snapshot preservation was introduced.
     if (context.allowNetwork === false && registeredModels.length > 0) return [...registeredModels];
     // Both providers refresh independently; the shared cache keeps that from
-    // multiplying into a second fan-out of list requests.
+    // multiplying into a second fan-out of list requests. Pricing starts in
+    // parallel and is awaited only after the catalog, so a slow or unreachable
+    // pricing catalog cannot delay the model list that matters. The catch keeps
+    // an abort that lands after an early return (catalog failure, superseded
+    // generation) from surfacing as an unhandled rejection.
+    const pricingPending = getPricingIndex({ force: context.force === true, signal: context.signal })
+      .catch(() => null);
     const fetched = await getCatalog(baseUrl, apiKey, { timeoutMs: 15_000, force: context.force });
     context.signal.throwIfAborted();
     if (requestGeneration !== generation) return [...registeredModels];
@@ -262,10 +274,15 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
       return [...registeredModels];
     }
     const store = await loadOverrideStore();
+    const pricing = await pricingPending;
+    // An abort while pricing was pending must not publish a half-refreshed list.
+    context.signal.throwIfAborted();
+    if (requestGeneration !== generation) return [...registeredModels];
     const built = buildProviderRegistration({
       catalog: fetched.models,
       contextOverrides: migration.contextOverrides,
       overrides: toOverrideMap(store),
+      costs: pricing ? resolveCatalogCosts(pricing, fetched.models) : undefined,
       baseUrl,
     });
     const models = tier === "primary" ? built.primaryModels : built.lastModels;
@@ -380,7 +397,19 @@ export async function loadProviderData(options: {
     ...(options.force ? { force: true } : {}),
   });
   if (!result.ok) throw new Error(result.reason);
-  return { catalog: result.models, contextOverrides: migration.contextOverrides, baseUrl };
+  // The same injected fetch/timeout applies here so a caller that stubs the
+  // network never reaches out for pricing either.
+  const pricing = await getPricingIndex({
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.force ? { force: true } : {}),
+  });
+  return {
+    catalog: result.models,
+    contextOverrides: migration.contextOverrides,
+    ...(pricing ? { costs: resolveCatalogCosts(pricing, result.models) } : {}),
+    baseUrl,
+  };
 }
 
 function toProviderModel(
@@ -388,6 +417,7 @@ function toProviderModel(
   contextOverrides: Map<string, { contextWindow: number; maxTokens: number }>,
   stats: Stats,
   baseUrl: string,
+  cost: ModelCost | undefined,
 ): ProviderModel {
   const stableLast = STABLE_LAST_RESORT_IDS.includes(model.id as typeof STABLE_LAST_RESORT_IDS[number]);
   const curated = contextOverrides.get(model.id);
@@ -432,7 +462,7 @@ function toProviderModel(
     name: (model.displayName?.replace(/^\*/, "") || model.id),
     reasoning: stableLast || model.thinking === true,
     input: [...input],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    cost: cost ? { ...cost } : { ...ZERO_COST },
     contextWindow,
     maxTokens,
     api,
