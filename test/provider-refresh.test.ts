@@ -206,10 +206,13 @@ test("an abort after an early return surfaces no unhandled rejection", async () 
   };
   process.on("unhandledRejection", onUnhandled);
 
+  // Hold the pricing fetch open so it is guaranteed still pending when the
+  // refresh is aborted, instead of racing a fixed delay.
+  const gate = Promise.withResolvers<void>();
   const pricing = Bun.serve({
     port: 0,
     fetch: async () => {
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      await gate.promise;
       return Response.json({});
     },
   });
@@ -222,10 +225,12 @@ test("an abort after an early return surfaces no unhandled rejection", async () 
     status = 503;
     await refresh({ signal: controller.signal });
     controller.abort();
-    // Let the still-pending pricing fetch observe the abort.
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    // One macrotask flushes the abort rejection and any unhandled event it
+    // would raise; the gated fetch is still pending at this point.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(unhandled).toEqual([]);
   } finally {
+    gate.resolve();
     process.off("unhandledRejection", onUnhandled);
     pricing.stop(true);
     clearPricingCache();
