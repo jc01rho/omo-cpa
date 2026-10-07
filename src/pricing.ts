@@ -314,7 +314,7 @@ export function clearPricingCache(): void {
 export interface FetchPricingOptions {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
-  /** Caller's abort signal, combined with the timeout so an aborted refresh cancels this fetch too. */
+  /** Caller's abort signal. An abort stops this caller from waiting; it does not cancel the shared fetch. */
   signal?: AbortSignal;
 }
 

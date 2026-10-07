@@ -199,6 +199,41 @@ test("a hanging pricing host cannot delay or abort a catalog refresh", async () 
   }
 });
 
+test("an abort after an early return surfaces no unhandled rejection", async () => {
+  const unhandled: string[] = [];
+  const onUnhandled = (reason: unknown): void => {
+    unhandled.push(String((reason as { name?: string })?.name ?? reason));
+  };
+  process.on("unhandledRejection", onUnhandled);
+
+  const pricing = Bun.serve({
+    port: 0,
+    fetch: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return Response.json({});
+    },
+  });
+  const saved = process.env["OMO_CPA_PRICING_URL"];
+  process.env["OMO_CPA_PRICING_URL"] = pricing.url.href;
+  clearPricingCache();
+  const controller = new AbortController();
+  try {
+    // The catalog fails, so refresh returns before pricing is awaited.
+    status = 503;
+    await refresh({ signal: controller.signal });
+    controller.abort();
+    // Let the still-pending pricing fetch observe the abort.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(unhandled).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    pricing.stop(true);
+    clearPricingCache();
+    if (saved === undefined) delete process.env["OMO_CPA_PRICING_URL"];
+    else process.env["OMO_CPA_PRICING_URL"] = saved;
+  }
+});
+
 test("an older publication cannot overwrite a newer refresh", async () => {
   await refresh();
   const published = Promise.withResolvers<void>();

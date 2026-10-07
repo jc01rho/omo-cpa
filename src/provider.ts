@@ -261,8 +261,11 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
     // Both providers refresh independently; the shared cache keeps that from
     // multiplying into a second fan-out of list requests. Pricing starts in
     // parallel and is awaited only after the catalog, so a slow or unreachable
-    // pricing catalog cannot delay the model list that matters.
-    const pricingPending = getPricingIndex({ force: context.force === true, signal: context.signal });
+    // pricing catalog cannot delay the model list that matters. The catch keeps
+    // an abort that lands after an early return (catalog failure, superseded
+    // generation) from surfacing as an unhandled rejection.
+    const pricingPending = getPricingIndex({ force: context.force === true, signal: context.signal })
+      .catch(() => null);
     const fetched = await getCatalog(baseUrl, apiKey, { timeoutMs: 15_000, force: context.force });
     context.signal.throwIfAborted();
     if (requestGeneration !== generation) return [...registeredModels];
@@ -272,6 +275,9 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
     }
     const store = await loadOverrideStore();
     const pricing = await pricingPending;
+    // An abort while pricing was pending must not publish a half-refreshed list.
+    context.signal.throwIfAborted();
+    if (requestGeneration !== generation) return [...registeredModels];
     const built = buildProviderRegistration({
       catalog: fetched.models,
       contextOverrides: migration.contextOverrides,
