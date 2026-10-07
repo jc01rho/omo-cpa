@@ -6,6 +6,8 @@ import { selectEndpoint } from "./endpoint.ts";
 import { getCatalog } from "./catalog.ts";
 import { DEFAULT_BASE_URL, loadConfig, toRoot } from "./config.ts";
 import { redact } from "./redact.ts";
+import { getPricingIndex, resolveCatalogCosts, ZERO_COST } from "./pricing.ts";
+import type { ModelCost } from "./pricing.ts";
 import { buildTierReport, loadOverrideStore, toOverrideMap } from "./tier.ts";
 import type { OverrideMap, TierReport } from "./tier.ts";
 import type { CatalogModel, Tier } from "./tier-types.ts";
@@ -73,6 +75,8 @@ export interface Credentials {
 export interface ProviderData {
   catalog: CatalogModel[];
   contextOverrides: Map<string, { contextWindow: number; maxTokens: number }>;
+  /** Per-model price by id, when the pricing catalog resolved one. */
+  costs?: ReadonlyMap<string, ModelCost>;
   baseUrl?: string;
 }
 
@@ -172,7 +176,9 @@ export function buildProviderRegistration(data: ProviderRegistrationData): Tiere
     inputFromDefault: 0,
   };
   const converted = new Map<string, ProviderModel>();
-  for (const model of catalog) converted.set(model.id, toProviderModel(model, data.contextOverrides, stats, baseUrl));
+  for (const model of catalog) {
+    converted.set(model.id, toProviderModel(model, data.contextOverrides, stats, baseUrl, data.costs?.get(model.id)));
+  }
 
   const select = (ids: readonly { id: string }[]): ProviderModel[] => ids.flatMap(({ id }) => {
     const model = converted.get(id);
@@ -262,10 +268,12 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
       return [...registeredModels];
     }
     const store = await loadOverrideStore();
+    const pricing = await getPricingIndex({ force: context.force === true });
     const built = buildProviderRegistration({
       catalog: fetched.models,
       contextOverrides: migration.contextOverrides,
       overrides: toOverrideMap(store),
+      costs: pricing ? resolveCatalogCosts(pricing, fetched.models) : undefined,
       baseUrl,
     });
     const models = tier === "primary" ? built.primaryModels : built.lastModels;
@@ -380,7 +388,13 @@ export async function loadProviderData(options: {
     ...(options.force ? { force: true } : {}),
   });
   if (!result.ok) throw new Error(result.reason);
-  return { catalog: result.models, contextOverrides: migration.contextOverrides, baseUrl };
+  const pricing = await getPricingIndex({ ...(options.force ? { force: true } : {}) });
+  return {
+    catalog: result.models,
+    contextOverrides: migration.contextOverrides,
+    ...(pricing ? { costs: resolveCatalogCosts(pricing, result.models) } : {}),
+    baseUrl,
+  };
 }
 
 function toProviderModel(
@@ -388,6 +402,7 @@ function toProviderModel(
   contextOverrides: Map<string, { contextWindow: number; maxTokens: number }>,
   stats: Stats,
   baseUrl: string,
+  cost: ModelCost | undefined,
 ): ProviderModel {
   const stableLast = STABLE_LAST_RESORT_IDS.includes(model.id as typeof STABLE_LAST_RESORT_IDS[number]);
   const curated = contextOverrides.get(model.id);
@@ -432,7 +447,7 @@ function toProviderModel(
     name: (model.displayName?.replace(/^\*/, "") || model.id),
     reasoning: stableLast || model.thinking === true,
     input: [...input],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    cost: cost ? { ...cost } : { ...ZERO_COST },
     contextWindow,
     maxTokens,
     api,
