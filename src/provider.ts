@@ -390,6 +390,10 @@ function toProviderModel(
   baseUrl: string,
 ): ProviderModel {
   const stableLast = STABLE_LAST_RESORT_IDS.includes(model.id as typeof STABLE_LAST_RESORT_IDS[number]);
+  // Mistral models (e.g. mistral-large-4) support reasoning_effort high/none,
+  // but CPA's /v1/models does not advertise a thinking flag for them. Force
+  // reasoning support so omo exposes the thinking level.
+  const isMistral = /mistral/i.test(model.id) || /mistral/i.test(model.upstreamModelId ?? "");
   const curated = contextOverrides.get(model.id);
   let contextWindow: number;
   if (stableLast) {
@@ -430,7 +434,7 @@ function toProviderModel(
   return {
     id: model.id,
     name: (model.displayName?.replace(/^\*/, "") || model.id),
-    reasoning: stableLast || model.thinking === true,
+    reasoning: stableLast || isMistral || model.thinking === true,
     input: [...input],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,
@@ -447,6 +451,12 @@ function toProviderModel(
       high: "high",
       xhigh: "xhigh",
       max: null,
+    } : isMistral ? {
+      // Mistral only accepts reasoning_effort "high" or "none". Expose only
+      // "high" so omo never sends an unsupported intermediate level.
+      off: null, minimal: null, low: null, medium: null,
+      high: "high",
+      xhigh: null, max: null,
     } : undefined,
   };
 }

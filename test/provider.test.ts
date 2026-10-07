@@ -373,6 +373,39 @@ function aliasCatalog(id: string): CatalogModel {
   };
 }
 
+// ---------- mistral reasoning support (forced, CPA does not advertise it) ----------
+
+describe("mistral models get forced reasoning and high-only thinking levels", () => {
+  test("mistral-large-4 is reasoning-capable with high-only thinkingLevelMap", () => {
+    const tiered = buildProviderRegistration({
+      catalog: [aliasCatalog("mistral-large-4")],
+      contextOverrides: new Map(),
+      overrides: {},
+    });
+    const model = tiered.primaryModels.find((m) => m.id === "mistral-large-4")
+      ?? tiered.lastModels.find((m) => m.id === "mistral-large-4");
+    expect(model).toBeDefined();
+    expect(model?.reasoning).toBe(true);
+    expect(model?.thinkingLevelMap).toEqual({
+      off: null, minimal: null, low: null, medium: null,
+      high: "high",
+      xhigh: null, max: null,
+    });
+  });
+
+  test("non-mistral model without thinking metadata stays reasoning:false", () => {
+    const tiered = buildProviderRegistration({
+      catalog: [aliasCatalog("some-unknown-model")],
+      contextOverrides: new Map(),
+      overrides: {},
+    });
+    const model = tiered.primaryModels.find((m) => m.id === "some-unknown-model")
+      ?? tiered.lastModels.find((m) => m.id === "some-unknown-model");
+    expect(model?.reasoning).toBe(false);
+    expect(model?.thinkingLevelMap).toBeUndefined();
+  });
+});
+
 describe("models absent from the catalog stay unregistered", () => {
   function tiersFor(catalog: CatalogModel[]) {
     const tiered = buildProviderRegistration({
