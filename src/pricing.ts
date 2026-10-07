@@ -56,13 +56,13 @@ export interface PricingIndex {
 const OFFICIAL_PROVIDERS: Record<string, string[]> = {
   openai: ["openai", "azure", "azure-cognitive-services"],
   anthropic: ["anthropic", "google-vertex-anthropic"],
-  deepseek: ["deepseek", "siliconflow-cn", "siliconflow"],
+  deepseek: ["deepseek", "siliconflow", "siliconflow-cn"],
   glm: ["zai", "zhipuai", "zai-coding-plan", "zhipuai-coding-plan"],
-  qwen: ["alibaba-cn", "alibaba", "aliyun-bailian"],
+  qwen: ["alibaba", "aliyun-bailian", "alibaba-cn"],
   google: ["google", "google-vertex"],
   xai: ["xai"],
-  minimax: ["minimax-cn", "minimax", "minimax-cn-coding-plan", "minimax-coding-plan"],
-  moonshot: ["moonshotai-cn", "moonshotai", "kimi-for-coding"],
+  minimax: ["minimax", "minimax-coding-plan", "minimax-cn", "minimax-cn-coding-plan"],
+  moonshot: ["moonshotai", "kimi-for-coding", "moonshotai-cn"],
   mistral: ["mistral"],
 };
 
@@ -275,6 +275,7 @@ interface CacheEntry {
 let cached: CacheEntry | null = null;
 let failureAt: number | null = null;
 let inFlight: { token: symbol; promise: Promise<PricingIndex | null> } | null = null;
+let generation = 0;
 
 function envMs(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -305,6 +306,9 @@ export function clearPricingCache(): void {
   cached = null;
   failureAt = null;
   inFlight = null;
+  // Bump the generation so an in-flight fetch that finishes later cannot write
+  // its result into the cache this call just cleared.
+  generation++;
 }
 
 export interface FetchPricingOptions {
@@ -335,32 +339,50 @@ export async function fetchPricingIndex(
   }
 }
 
+function abortRejection(signal: AbortSignal): Promise<never> {
+  return new Promise((_, reject) => {
+    const fail = (): void => reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+    if (signal.aborted) fail();
+    else signal.addEventListener("abort", fail, { once: true });
+  });
+}
+
 /**
  * Serve a fresh index, the last good one while a failure window is open, or
  * null. A fetch already in flight is joined rather than duplicated.
+ *
+ * The shared fetch is bound only to its own timeout, never to one caller's
+ * signal: an abort by one tier must not cancel the fetch the other tier is
+ * awaiting, and must not record a failure (which would blank prices for the
+ * whole failure window). A caller that aborts simply stops waiting.
  */
 export async function getPricingIndex(
   options: CachedPricingOptions = {},
 ): Promise<PricingIndex | null> {
-  const { force = false, ...fetchOptions } = options;
+  const { force = false, signal, ...fetchOptions } = options;
   const now = Date.now();
   if (!force && cached && now - cached.fetchedAt < pricingTtl()) return cached.index;
   if (!force && failureAt !== null && now - failureAt < failureTtl()) return cached?.index ?? null;
-  if (inFlight) return inFlight.promise;
-  const token = Symbol("pricing-fetch");
-  const promise = (async () => {
-    const index = await fetchPricingIndex(fetchOptions);
-    if (index) {
-      cached = { index, fetchedAt: Date.now() };
-      failureAt = null;
-    } else {
-      failureAt = Date.now();
-    }
-    return index ?? cached?.index ?? null;
-  })().finally(() => {
-    // Only clear the slot this call owns, so a newer fetch is not orphaned.
-    if (inFlight?.token === token) inFlight = null;
-  });
-  inFlight = { token, promise };
-  return promise;
+  if (!inFlight) {
+    const token = Symbol("pricing-fetch");
+    const startedAt = generation;
+    const promise = (async () => {
+      const index = await fetchPricingIndex(fetchOptions);
+      // A clear() during the fetch owns the cache now; do not resurrect old state.
+      if (startedAt !== generation) return index ?? null;
+      if (index) {
+        cached = { index, fetchedAt: Date.now() };
+        failureAt = null;
+      } else {
+        failureAt = Date.now();
+      }
+      return index ?? cached?.index ?? null;
+    })().finally(() => {
+      // Only clear the slot this call owns, so a newer fetch is not orphaned.
+      if (inFlight?.token === token) inFlight = null;
+    });
+    inFlight = { token, promise };
+  }
+  const shared = inFlight.promise;
+  return signal ? Promise.race([shared, abortRejection(signal)]) : shared;
 }

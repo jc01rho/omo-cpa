@@ -173,6 +173,32 @@ test("a cancelled refresh cannot mutate the registration snapshot", async () => 
   expect(registeredIds()).toEqual(before);
 });
 
+test("a hanging pricing host cannot delay or abort a catalog refresh", async () => {
+  const pricing = Bun.serve({
+    port: 0,
+    fetch: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+      return Response.json({});
+    },
+  });
+  const saved = process.env["OMO_CPA_PRICING_URL"];
+  process.env["OMO_CPA_PRICING_URL"] = pricing.url.href;
+  clearPricingCache();
+  const started = Date.now();
+  try {
+    // A caller deadline well past pricing's 3s cap, so this measures the cap
+    // itself rather than racing the caller's own abort.
+    const models = await refresh({ force: true, signal: AbortSignal.timeout(10_000) });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(models.map(({ id }) => id)).toContain("gpt-6-sol");
+  } finally {
+    pricing.stop(true);
+    clearPricingCache();
+    if (saved === undefined) delete process.env["OMO_CPA_PRICING_URL"];
+    else process.env["OMO_CPA_PRICING_URL"] = saved;
+  }
+});
+
 test("an older publication cannot overwrite a newer refresh", async () => {
   await refresh();
   const published = Promise.withResolvers<void>();

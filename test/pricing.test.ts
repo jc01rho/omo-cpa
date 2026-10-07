@@ -135,6 +135,17 @@ function index(): PricingIndex {
   return buildPricingIndex(catalogFixture());
 }
 
+function countingFetch(calls: { n: number }) {
+  return (async (input: string | URL | Request) => {
+    calls.n++;
+    expect(String(input)).toContain("models.dev");
+    return new Response(JSON.stringify(catalogFixture()), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+}
+
 afterEach(() => {
   clearPricingCache();
   delete process.env["OMO_CPA_PRICING_TTL_MS"];
@@ -250,18 +261,26 @@ describe("lookupCost — display name and version normalization", () => {
   });
 });
 
-describe("pricing cache", () => {
-  function countingFetch(calls: { n: number }) {
-    return (async (input: string | URL | Request) => {
-      calls.n++;
-      expect(String(input)).toContain("models.dev");
-      return new Response(JSON.stringify(catalogFixture()), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    }) as unknown as typeof fetch;
-  }
+describe("official vendor ordering", () => {
+  test("the international provider precedes a regional one", () => {
+    const idx = buildPricingIndex({
+      "moonshotai-cn": { id: "moonshotai-cn", models: { "kimi-k3": { id: "kimi-k3", name: "Kimi K3", cost: { input: 9, output: 9 } } } },
+      moonshotai: { id: "moonshotai", models: { "kimi-k3": { id: "kimi-k3", name: "Kimi K3", cost: { input: 3, output: 15 } } } },
+    });
+    expect(lookupCost(idx, "kimi-k3")).toEqual({ input: 3, output: 15, cacheRead: 0, cacheWrite: 0 });
+  });
 
+  test("an official row wins over a reseller regardless of key order", () => {
+    const idx = buildPricingIndex({
+      openai: { id: "openai", models: { "gpt-x": { id: "gpt-x", name: "GPT X", cost: { input: 1, output: 2 } } } },
+      azure: { id: "azure", models: { "gpt-x": { id: "gpt-x", name: "GPT X", cost: { input: 9, output: 9 } } } },
+      "azure-cognitive-services": { id: "azure-cognitive-services", models: { "gpt-x": { id: "gpt-x", name: "GPT X", cost: { input: 5, output: 5 } } } },
+    });
+    expect(lookupCost(idx, "gpt-x")?.input).toBe(1);
+  });
+});
+
+describe("pricing cache", () => {
   test("a fetch populates and then serves the cache", async () => {
     const calls = { n: 0 };
     const impl = countingFetch(calls);
@@ -328,5 +347,59 @@ describe("pricing cache", () => {
     await getPricingIndex({ fetchImpl: impl });
     await getPricingIndex({ fetchImpl: impl, force: true });
     expect(calls.n).toBe(2);
+  });
+
+  test("a caller abort does not cancel or fault the shared fetch", async () => {
+    let resolveFetch: (() => void) | undefined;
+    const started = Promise.withResolvers<void>();
+    const impl = (async () => {
+      started.resolve();
+      await new Promise<void>((resolve) => { resolveFetch = resolve; });
+      return new Response(JSON.stringify(catalogFixture()), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const controller = new AbortController();
+    const aborted = getPricingIndex({ fetchImpl: impl, signal: controller.signal });
+    const joined = getPricingIndex({ fetchImpl: impl });
+    await started.promise;
+    controller.abort();
+    await expect(aborted).rejects.toThrow();
+
+    // The shared fetch still completes and caches; the joiner gets the index.
+    resolveFetch?.();
+    const index = await joined;
+    expect(index).not.toBeNull();
+    expect(cachedPricingIndex()).toBe(index);
+    // No failure window is left behind: a later call is served without network.
+    const again = await getPricingIndex({
+      fetchImpl: (async () => { throw new Error("should not fetch"); }) as unknown as typeof fetch,
+    });
+    expect(again).toBe(index);
+  });
+});
+
+describe("timing and cache independence", () => {
+  test("a timeout inside the window does not blank the last good index", async () => {
+    const calls = { n: 0 };
+    const good = await getPricingIndex({ fetchImpl: countingFetch(calls) });
+    const failing = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+    expect(await getPricingIndex({ fetchImpl: failing, force: true })).toBe(good);
+    expect(cachedPricingIndex()).toBe(good);
+  });
+
+  test("clearPricingCache during an in-flight fetch is not overwritten by it", async () => {
+    const started = Promise.withResolvers<void>();
+    let resolveFetch: (() => void) | undefined;
+    const impl = (async () => {
+      started.resolve();
+      await new Promise<void>((resolve) => { resolveFetch = resolve; });
+      return new Response(JSON.stringify(catalogFixture()), { status: 200 });
+    }) as unknown as typeof fetch;
+    const pending = getPricingIndex({ fetchImpl: impl });
+    await started.promise;
+    clearPricingCache();
+    resolveFetch?.();
+    await pending;
+    expect(cachedPricingIndex()).toBeNull();
   });
 });
