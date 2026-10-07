@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { clearCatalogCache } from "../src/catalog.ts";
 import { registerCpaProvider } from "../src/provider.ts";
+import { clearPricingCache } from "../src/pricing.ts";
 import type { ProviderConfig, RefreshModelsContext } from "../src/provider.ts";
 
 let ids: string[];
@@ -12,9 +13,17 @@ let server: ReturnType<typeof Bun.serve>;
 let configs: ProviderConfig[];
 let oldKey: string | undefined;
 let oldBase: string | undefined;
+let pricingServer: ReturnType<typeof Bun.serve>;
+let oldPricingUrl: string | undefined;
 
 beforeEach(() => {
   clearCatalogCache();
+  clearPricingCache();
+  // Pricing must never reach the real network from a test. An empty catalog is
+  // enough: these tests are about catalog refresh behavior, not price values.
+  pricingServer = Bun.serve({ port: 0, fetch: () => Response.json({}) });
+  oldPricingUrl = process.env["OMO_CPA_PRICING_URL"];
+  process.env["OMO_CPA_PRICING_URL"] = pricingServer.url.href;
   ids = ["gpt-6-sol", "maxrouter-gpt-6-astra"];
   status = 200;
   requests = 0;
@@ -46,7 +55,11 @@ beforeEach(() => {
 afterEach(() => {
   gate?.resolve();
   server.stop(true);
+  pricingServer.stop(true);
+  if (oldPricingUrl === undefined) delete process.env["OMO_CPA_PRICING_URL"];
+  else process.env["OMO_CPA_PRICING_URL"] = oldPricingUrl;
   clearCatalogCache();
+  clearPricingCache();
   if (oldKey === undefined) delete process.env["OMO_CPA_API_KEY"];
   else process.env["OMO_CPA_API_KEY"] = oldKey;
   if (oldBase === undefined) delete process.env["OMO_CPA_BASE_URL"];
@@ -158,6 +171,72 @@ test("a cancelled refresh cannot mutate the registration snapshot", async () => 
     await expect(pending).rejects.toThrow();
   }
   expect(registeredIds()).toEqual(before);
+});
+
+test("a hanging pricing host cannot delay or abort a catalog refresh", async () => {
+  const pricing = Bun.serve({
+    port: 0,
+    fetch: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+      return Response.json({});
+    },
+  });
+  const saved = process.env["OMO_CPA_PRICING_URL"];
+  process.env["OMO_CPA_PRICING_URL"] = pricing.url.href;
+  clearPricingCache();
+  const started = Date.now();
+  try {
+    // A caller deadline well past pricing's 3s cap, so this measures the cap
+    // itself rather than racing the caller's own abort.
+    const models = await refresh({ force: true, signal: AbortSignal.timeout(10_000) });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(models.map(({ id }) => id)).toContain("gpt-6-sol");
+  } finally {
+    pricing.stop(true);
+    clearPricingCache();
+    if (saved === undefined) delete process.env["OMO_CPA_PRICING_URL"];
+    else process.env["OMO_CPA_PRICING_URL"] = saved;
+  }
+});
+
+test("an abort after an early return surfaces no unhandled rejection", async () => {
+  const unhandled: string[] = [];
+  const onUnhandled = (reason: unknown): void => {
+    unhandled.push(String((reason as { name?: string })?.name ?? reason));
+  };
+  process.on("unhandledRejection", onUnhandled);
+
+  // Hold the pricing fetch open so it is guaranteed still pending when the
+  // refresh is aborted, instead of racing a fixed delay.
+  const gate = Promise.withResolvers<void>();
+  const pricing = Bun.serve({
+    port: 0,
+    fetch: async () => {
+      await gate.promise;
+      return Response.json({});
+    },
+  });
+  const saved = process.env["OMO_CPA_PRICING_URL"];
+  process.env["OMO_CPA_PRICING_URL"] = pricing.url.href;
+  clearPricingCache();
+  const controller = new AbortController();
+  try {
+    // The catalog fails, so refresh returns before pricing is awaited.
+    status = 503;
+    await refresh({ signal: controller.signal });
+    controller.abort();
+    // One macrotask flushes the abort rejection and any unhandled event it
+    // would raise; the gated fetch is still pending at this point.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(unhandled).toEqual([]);
+  } finally {
+    gate.resolve();
+    process.off("unhandledRejection", onUnhandled);
+    pricing.stop(true);
+    clearPricingCache();
+    if (saved === undefined) delete process.env["OMO_CPA_PRICING_URL"];
+    else process.env["OMO_CPA_PRICING_URL"] = saved;
+  }
 });
 
 test("an older publication cannot overwrite a newer refresh", async () => {
