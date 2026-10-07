@@ -81,8 +81,9 @@ const FAMILY_PATTERNS: Array<[RegExp, string]> = [
 
 /** Subscription plans publish a nominal zero; it must never win a comparison. */
 function isPlanZero(entry: PricingEntry): boolean {
-  return /coding-plan|token-plan/.test(entry.provider.toLowerCase()) &&
-    entry.cost.input === 0 && entry.cost.output === 0;
+  if (entry.cost.input !== 0 || entry.cost.output !== 0) return false;
+  const provider = entry.provider.toLowerCase();
+  return /coding-plan|token-plan/.test(provider) || provider === "kimi-for-coding";
 }
 
 /**
@@ -106,18 +107,27 @@ export function normalizeKey(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
+/**
+ * Resolve a family from a live displayName that is itself already an id
+ * ("glm-5.3-flash", "deepseek/deepseek-v4.1-flash"). Prose names are skipped:
+ * "Free Models Router" is a router, not a vendor family, and matching it would
+ * hand an opaque alias an unrelated price.
+ */
+function familyFromNameToken(displayName: string): string {
+  const token = stripModelPrefix(displayName.trim());
+  if (!token || /^ft:/i.test(token)) return "";
+  const looksLikeId = /^[a-z0-9][a-z0-9._\-]*$/i.test(token) && /[.\-]/.test(token);
+  if (!looksLikeId) return "";
+  return familyOf(token, null);
+}
+
 function familyOf(modelId: string, displayName: string | null): string {
   const identity = (stripModelPrefix(modelId) || modelId).toLowerCase();
   for (const [pattern, family] of FAMILY_PATTERNS) {
     if (pattern.test(identity)) return family;
   }
-  if (displayName) {
-    const name = displayName.toLowerCase();
-    for (const [pattern, family] of FAMILY_PATTERNS) {
-      if (pattern.test(name)) return family;
-    }
-  }
-  return "";
+  const fromName = displayName ? familyFromNameToken(displayName) : "";
+  return fromName;
 }
 
 function candidateKeys(modelId: string): string[] {
@@ -206,7 +216,12 @@ function choose(modelId: string, displayName: string | null, candidates: Pricing
   const scoped = list.filter((e) => official.includes(e.provider.toLowerCase()));
   if (scoped.length === 0) return null;
   list = scoped;
+  const priority = (entry: PricingEntry): number => {
+    const rank = official.indexOf(entry.provider.toLowerCase());
+    return rank === -1 ? official.length : rank;
+  };
   list.sort((a, b) =>
+    priority(a) - priority(b) ||
     (a.status === "deprecated" ? 1 : 0) - (b.status === "deprecated" ? 1 : 0) ||
     (a.provider < b.provider ? -1 : a.provider > b.provider ? 1 : 0) ||
     (a.modelId < b.modelId ? -1 : a.modelId > b.modelId ? 1 : 0));
@@ -234,7 +249,6 @@ export function lookupCost(index: PricingIndex, modelId: string, displayName: st
   }
   return null;
 }
-
 export function resolveCatalogCosts(
   index: PricingIndex,
   models: readonly CatalogModel[],
@@ -247,16 +261,34 @@ export function resolveCatalogCosts(
   return costs;
 }
 
-// Pricing is a best-effort enrichment: a fetch failure leaves every model at
-// the zero cost it had before and never blocks registration.
-let cached: { index: PricingIndex; fetchedAt: number } | null = null;
-let inFlight: Promise<PricingIndex | null> | null = null;
+// Pricing is best-effort: a fetch failure leaves every model at the zero cost
+// it had before and never blocks registration. A failure is remembered for a
+// short window so an offline host does not re-attempt on every refresh.
+export const DEFAULT_PRICING_TIMEOUT_MS = 3_000;
+export const DEFAULT_PRICING_FAILURE_TTL_MS = 60_000;
+
+interface CacheEntry {
+  index: PricingIndex;
+  fetchedAt: number;
+}
+
+let cached: CacheEntry | null = null;
+let failureAt: number | null = null;
+let inFlight: { token: symbol; promise: Promise<PricingIndex | null> } | null = null;
+
+function envMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
 
 function pricingTtl(): number {
-  const raw = process.env["OMO_CPA_PRICING_TTL_MS"];
-  if (raw === undefined) return DEFAULT_PRICING_TTL_MS;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_PRICING_TTL_MS;
+  return envMs("OMO_CPA_PRICING_TTL_MS", DEFAULT_PRICING_TTL_MS);
+}
+
+function failureTtl(): number {
+  return envMs("OMO_CPA_PRICING_FAILURE_TTL_MS", DEFAULT_PRICING_FAILURE_TTL_MS);
 }
 
 function pricingUrl(): string {
@@ -271,26 +303,31 @@ export function cachedPricingIndex(): PricingIndex | null {
 /** Drop the cached catalog. Used by tests and by an explicit refresh. */
 export function clearPricingCache(): void {
   cached = null;
+  failureAt = null;
   inFlight = null;
 }
 
 export interface FetchPricingOptions {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  /** Caller's abort signal, combined with the timeout so an aborted refresh cancels this fetch too. */
+  signal?: AbortSignal;
 }
 
 export interface CachedPricingOptions extends FetchPricingOptions {
   force?: boolean;
 }
 
-/** Fetch and index the catalog. Returns null on any failure. */
+/** Fetch and index the catalog. Returns null on any failure, including abort. */
 export async function fetchPricingIndex(
   options: FetchPricingOptions = {},
 ): Promise<PricingIndex | null> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const timeoutMs = options.timeoutMs ?? 12_000;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PRICING_TIMEOUT_MS;
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = options.signal ? AbortSignal.any([timeout, options.signal]) : timeout;
   try {
-    const response = await fetchImpl(pricingUrl(), { signal: AbortSignal.timeout(timeoutMs) });
+    const response = await fetchImpl(pricingUrl(), { signal });
     if (!response.ok) return null;
     return buildPricingIndex(await response.json());
   } catch {
@@ -299,22 +336,31 @@ export async function fetchPricingIndex(
 }
 
 /**
- * Serve a recent index, joining a fetch already in flight. Only a successful
- * fetch is cached, so a failure stays retryable on the next call.
+ * Serve a fresh index, the last good one while a failure window is open, or
+ * null. A fetch already in flight is joined rather than duplicated.
  */
 export async function getPricingIndex(
   options: CachedPricingOptions = {},
 ): Promise<PricingIndex | null> {
   const { force = false, ...fetchOptions } = options;
-  if (!force && cached && Date.now() - cached.fetchedAt < pricingTtl()) return cached.index;
-  if (inFlight) return inFlight;
+  const now = Date.now();
+  if (!force && cached && now - cached.fetchedAt < pricingTtl()) return cached.index;
+  if (!force && failureAt !== null && now - failureAt < failureTtl()) return cached?.index ?? null;
+  if (inFlight) return inFlight.promise;
+  const token = Symbol("pricing-fetch");
   const promise = (async () => {
     const index = await fetchPricingIndex(fetchOptions);
-    if (index) cached = { index, fetchedAt: Date.now() };
-    return index;
+    if (index) {
+      cached = { index, fetchedAt: Date.now() };
+      failureAt = null;
+    } else {
+      failureAt = Date.now();
+    }
+    return index ?? cached?.index ?? null;
   })().finally(() => {
-    inFlight = null;
+    // Only clear the slot this call owns, so a newer fetch is not orphaned.
+    if (inFlight?.token === token) inFlight = null;
   });
-  inFlight = promise;
+  inFlight = { token, promise };
   return promise;
 }

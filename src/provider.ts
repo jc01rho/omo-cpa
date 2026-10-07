@@ -259,7 +259,10 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
     // its catalog, as it did before snapshot preservation was introduced.
     if (context.allowNetwork === false && registeredModels.length > 0) return [...registeredModels];
     // Both providers refresh independently; the shared cache keeps that from
-    // multiplying into a second fan-out of list requests.
+    // multiplying into a second fan-out of list requests. Pricing starts in
+    // parallel and is awaited only after the catalog, so a slow or unreachable
+    // pricing catalog cannot delay the model list that matters.
+    const pricingPending = getPricingIndex({ force: context.force === true, signal: context.signal });
     const fetched = await getCatalog(baseUrl, apiKey, { timeoutMs: 15_000, force: context.force });
     context.signal.throwIfAborted();
     if (requestGeneration !== generation) return [...registeredModels];
@@ -268,7 +271,7 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
       return [...registeredModels];
     }
     const store = await loadOverrideStore();
-    const pricing = await getPricingIndex({ force: context.force === true });
+    const pricing = await pricingPending;
     const built = buildProviderRegistration({
       catalog: fetched.models,
       contextOverrides: migration.contextOverrides,
@@ -388,7 +391,13 @@ export async function loadProviderData(options: {
     ...(options.force ? { force: true } : {}),
   });
   if (!result.ok) throw new Error(result.reason);
-  const pricing = await getPricingIndex({ ...(options.force ? { force: true } : {}) });
+  // The same injected fetch/timeout applies here so a caller that stubs the
+  // network never reaches out for pricing either.
+  const pricing = await getPricingIndex({
+    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.force ? { force: true } : {}),
+  });
   return {
     catalog: result.models,
     contextOverrides: migration.contextOverrides,

@@ -222,6 +222,13 @@ describe("lookupCost — alias safety", () => {
     expect(lookupCost(index(), "higher-coding", "Free Models Router")).toBeNull();
   });
 
+  test("a prose display name is not treated as a family", () => {
+    // Live aliases carry prose names like "Free Models Router"; a name that is
+    // not id-shaped must not promote the model into a family.
+    expect(lookupCost(index(), "router-thing", "Free Models Router")).toBeNull();
+    expect(lookupCost(index(), "router-thing", "Gemini 3.1 Pro (High)")).toBeNull();
+  });
+
   test("an exact id resolves to its own price", () => {
     expect(lookupCost(index(), "gpt-6-astra")?.input).toBe(10);
   });
@@ -279,13 +286,33 @@ describe("pricing cache", () => {
     expect(b).toBe(c);
   });
 
-  test("a failed fetch is not cached so the next call retries", async () => {
-    const failing = (async () => new Response("nope", { status: 503 })) as unknown as typeof fetch;
-    expect(await getPricingIndex({ fetchImpl: failing })).toBeNull();
-    expect(cachedPricingIndex()).toBeNull();
+  test("a failed fetch opens a short window and keeps the last good index", async () => {
     const calls = { n: 0 };
-    expect(await getPricingIndex({ fetchImpl: countingFetch(calls) })).not.toBeNull();
-    expect(calls.n).toBe(1);
+    const good = await getPricingIndex({ fetchImpl: countingFetch(calls) });
+    expect(good).not.toBeNull();
+    clearPricingCache();
+    const failCalls = { n: 0 };
+    const failing = (async () => {
+      failCalls.n++;
+      return new Response("nope", { status: 503 });
+    }) as unknown as typeof fetch;
+    expect(await getPricingIndex({ fetchImpl: failing })).toBeNull();
+    // Inside the failure window the second call does not touch the network.
+    expect(await getPricingIndex({ fetchImpl: failing })).toBeNull();
+    expect(failCalls.n).toBe(1);
+    // force ignores the window and retries immediately.
+    await getPricingIndex({ fetchImpl: failing, force: true });
+    expect(failCalls.n).toBe(2);
+  });
+
+  test("a failure inside the window still serves the last good index", async () => {
+    const calls = { n: 0 };
+    const good = await getPricingIndex({ fetchImpl: countingFetch(calls) });
+    const failing = (async () => new Response("nope", { status: 503 })) as unknown as typeof fetch;
+    // force runs the failing fetch but a later cached read is preserved: the
+    // failed refresh never wipes the last good prices.
+    expect(await getPricingIndex({ fetchImpl: failing, force: true })).toBe(good);
+    expect(await getPricingIndex({ fetchImpl: failing })).toBe(good);
   });
 
   test("a network throw resolves to null instead of breaking registration", async () => {

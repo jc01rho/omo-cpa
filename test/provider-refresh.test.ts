@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { clearCatalogCache } from "../src/catalog.ts";
 import { registerCpaProvider } from "../src/provider.ts";
+import { clearPricingCache } from "../src/pricing.ts";
 import type { ProviderConfig, RefreshModelsContext } from "../src/provider.ts";
 
 let ids: string[];
@@ -12,9 +13,17 @@ let server: ReturnType<typeof Bun.serve>;
 let configs: ProviderConfig[];
 let oldKey: string | undefined;
 let oldBase: string | undefined;
+let pricingServer: ReturnType<typeof Bun.serve>;
+let oldPricingUrl: string | undefined;
 
 beforeEach(() => {
   clearCatalogCache();
+  clearPricingCache();
+  // Pricing must never reach the real network from a test. An empty catalog is
+  // enough: these tests are about catalog refresh behavior, not price values.
+  pricingServer = Bun.serve({ port: 0, fetch: () => Response.json({}) });
+  oldPricingUrl = process.env["OMO_CPA_PRICING_URL"];
+  process.env["OMO_CPA_PRICING_URL"] = pricingServer.url.href;
   ids = ["gpt-6-sol", "maxrouter-gpt-6-astra"];
   status = 200;
   requests = 0;
@@ -46,7 +55,11 @@ beforeEach(() => {
 afterEach(() => {
   gate?.resolve();
   server.stop(true);
+  pricingServer.stop(true);
+  if (oldPricingUrl === undefined) delete process.env["OMO_CPA_PRICING_URL"];
+  else process.env["OMO_CPA_PRICING_URL"] = oldPricingUrl;
   clearCatalogCache();
+  clearPricingCache();
   if (oldKey === undefined) delete process.env["OMO_CPA_API_KEY"];
   else process.env["OMO_CPA_API_KEY"] = oldKey;
   if (oldBase === undefined) delete process.env["OMO_CPA_BASE_URL"];
