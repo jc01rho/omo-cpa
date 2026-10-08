@@ -111,6 +111,51 @@ test("retains models on a failed refresh", async () => {
   expect(registeredIds()).toContain("maxrouter-gpt-6-astra");
 });
 
+// A cold process has no registration snapshot, so a failed fetch used to return
+// nothing even though the store still held the last usable catalog. Every
+// fallback chain key then validated as an unknown selector at session start.
+test("restores the persisted catalog when a cold fetch fails", async () => {
+  await refresh();
+  const primary = configs[0];
+  if (!primary) throw new Error("primary provider was not registered");
+  const primaryIds = (primary.models ?? []).map(({ id }) => id);
+  expect(primaryIds.length).toBeGreaterThan(0);
+  status = 503;
+  const stored = { models: (primary.models ?? []).map((model) => ({ ...model })), tier: "primary" };
+  const after = await primary.refreshModels!({
+    ...context({ credential: { access: "senpi-fresh", baseUrl: server.url.origin } }),
+    stored,
+  });
+  expect(after.map(({ id }) => id)).toEqual(primaryIds);
+});
+
+test("ignores a stored catalog tagged for the other tier", async () => {
+  const before = await refresh();
+  const primary = configs[0];
+  if (!primary) throw new Error("primary provider was not registered");
+  status = 503;
+  const after = await primary.refreshModels!({
+    ...context({ credential: { access: "senpi-fresh", baseUrl: server.url.origin } }),
+    stored: { models: before.map((model) => ({ ...model })), tier: "last" },
+  });
+  expect(after).toEqual([]);
+});
+
+test("a failed cold refresh never persists an empty catalog", async () => {
+  status = 503;
+  const persisted: unknown[] = [];
+  const after = await refresh({
+    publish: async (entry) => {
+      persisted.push((entry as { persist?: unknown }).persist);
+    },
+  });
+  expect(after).toEqual([]);
+  const wiped = persisted.some(
+    (entry) => Array.isArray((entry as { models?: unknown[] })?.models) && (entry as { models: unknown[] }).models.length === 0,
+  );
+  expect(wiped).toBe(false);
+});
+
 test("retains missing IDs while accepting newly listed IDs", async () => {
   await refresh();
   ids = ["gpt-6-sol", "gpt-6-new"];

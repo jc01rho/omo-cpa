@@ -53,6 +53,11 @@ export interface RefreshModelsContext {
   signal: AbortSignal;
   allowNetwork?: boolean;
   force?: boolean;
+  /**
+   * Provider-scoped catalog snapshot senpi captured before this refresh phase.
+   * Present on the offline restore phase and on every network phase.
+   */
+  stored?: { models?: readonly ProviderModel[]; tier?: string } | undefined;
   publish(entry: { persisted?: string; persist?: unknown }): Promise<void>;
 }
 
@@ -252,9 +257,18 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
       registeredModels.splice(0);
       currentConnection = { apiKey: apiKey ?? "", baseUrl };
     }
+    // Restore the persisted catalog before anything can leave it empty. senpi's
+    // builtin providers restore from `context.stored` here; an extension-only
+    // provider that skips it hands the session an empty model list whenever the
+    // fetch below cannot run (offline phase, unreachable server, missing key),
+    // and every fallback chain key then validates as an unknown selector.
+    if (registeredModels.length === 0) {
+      const restored = readStoredModels(context.stored, tier);
+      if (restored.length > 0) registeredModels.splice(0, registeredModels.length, ...restored);
+    }
     if (!apiKey) {
       await publishBestEffort(context, { kind: "catalog-empty", tier, reason: "추론 키 없음" }, registeredModels);
-      return [];
+      return [...registeredModels];
     }
     // Reuse an existing snapshot during senpi's restore phase. Its CLI model
     // listing only runs this phase, so a cold CPA registration must still load
@@ -307,6 +321,25 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
 export interface StoredConnection {
   apiKey: string;
   baseUrl: string;
+}
+
+/**
+ * Catalog models senpi persisted for this provider in an earlier session.
+ *
+ * The entry is provider-scoped, so it may belong to the other tier of this
+ * plugin (both share one store file). `tier` is the plugin's own tag on the
+ * payload it published; an entry only counts when it is tagged for this tier,
+ * so the primary provider never serves the last-resort list and vice versa.
+ */
+export function readStoredModels(
+  stored: RefreshModelsContext["stored"],
+  tier: Tier,
+): ProviderModel[] {
+  const models = stored?.models;
+  if (!Array.isArray(models)) return [];
+  if (stored?.tier !== undefined && stored.tier !== tier) return [];
+  return models.filter((model): model is ProviderModel =>
+    typeof model === "object" && model !== null && typeof (model as ProviderModel).id === "string");
 }
 
 /**
@@ -375,7 +408,13 @@ async function publishBestEffort(
     // senpi restores a stored entry with `entry.models.filter(...)`, so every
     // published payload must carry a models array; one without it makes the
     // next cold start throw inside the restore and drop the whole catalog.
-    await context.publish({ persist: { models, ...persist } });
+    //
+    // An empty list is a failed or credential-less refresh, never evidence that
+    // the provider lost its models: persisting it would overwrite the store's
+    // usable catalog with nothing, and every later cold start would restore an
+    // empty list. Publish a non-persisting update instead.
+    const entry = models.length > 0 ? { models, ...persist } : undefined;
+    await context.publish({ persist: entry });
   } catch {
     // Registry persistence is best-effort; the in-memory return remains usable.
   }
