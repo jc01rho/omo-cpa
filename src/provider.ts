@@ -134,6 +134,7 @@ export interface Stats {
   clampedMaxTokens: number;
   overruledContext: number;
   inputFromGemini: number;
+  inputFromCodex: number;
   inputFromDefault: number;
 }
 
@@ -173,6 +174,7 @@ export function buildProviderRegistration(data: ProviderRegistrationData): Tiere
     clampedMaxTokens: 0,
     overruledContext: 0,
     inputFromGemini: 0,
+    inputFromCodex: 0,
     inputFromDefault: 0,
   };
   const converted = new Map<string, ProviderModel>();
@@ -453,8 +455,15 @@ function toProviderModel(
   if (maxTokens <= 0) maxTokens = 1;
 
   const input = stableLast ? ["text", "image"] as const : inputModalities(model.inputModalities, undefined);
-  if (model.inputModalities) stats.inputFromGemini++;
-  else stats.inputFromDefault++;
+  // Provenance counts describe what the LISTS declared, so the two
+  // synthesized last-resort models (which declare text+image locally) are
+  // left out rather than inflating a source they did not come from.
+  if (!stableLast) {
+    if (model.inputModalities) {
+      if (model.inputModalitiesSource === "codex") stats.inputFromCodex++;
+      else stats.inputFromGemini++;
+    } else stats.inputFromDefault++;
+  }
 
   const endpoint = selectEndpoint(model);
   const api = endpoint.endpoint === "anthropic"

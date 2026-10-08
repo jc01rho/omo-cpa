@@ -159,10 +159,17 @@ export function mergeCatalogs(
     model.displayName ??= stringAt(record, "displayName");
     model.inputModalities = stringArrayAt(record, "supportedInputModalities");
     model.outputModalities = stringArrayAt(record, "supportedOutputModalities");
+    if (model.inputModalities !== null) model.inputModalitiesSource = "gemini";
   }
 
-  // Codex exposes the maximum window under `models[].slug`, not `data[].id`.
-  // It enriches only IDs already present in the canonical OpenAI list.
+  // Codex exposes the maximum window under `models[].slug`, not `data[].id`,
+  // and it is the only list that declares INPUT modalities for the models the
+  // Gemini list omits (measured 2026-10-08 on the live 84-model catalog: 33
+  // carry `supportedInputModalities`, all 84 carry `input_modalities`, and
+  // wherever both speak the text/image set agrees, and Gemini additionally
+  // reports video/audio). Gemini wins when it speaks; Codex fills the gap,
+  // instead of a vision model staying unknown and being registered as
+  // text-only. It enriches only IDs already present in the canonical OpenAI list.
   for (const record of recordsAt(codexResponse, "models")) {
     const id = stringAt(record, "slug");
     if (!id) continue;
@@ -170,6 +177,11 @@ export function mergeCatalogs(
     if (!model) continue;
     model.contextLength = readRecordContextLength(id, "codex", record, issues) ?? model.contextLength;
     model.maxTokens = numberAt(record, "max_tokens") ?? model.maxTokens;
+    const codexInput = stringArrayAt(record, "input_modalities");
+    if (model.inputModalities === null && codexInput !== null) {
+      model.inputModalities = codexInput;
+      model.inputModalitiesSource = "codex";
+    }
     clampOutputLimit(model, issues, "codex");
   }
 

@@ -384,6 +384,7 @@ describe("Stats shape", () => {
       clampedMaxTokens: 0,
       overruledContext: 0,
       inputFromGemini: 0,
+      inputFromCodex: 0,
       inputFromDefault: 0,
     };
     expect(s.realContext).toBe(0);
@@ -391,7 +392,56 @@ describe("Stats shape", () => {
     expect(s.clampedMaxTokens).toBe(0);
     expect(s.overruledContext).toBe(0);
     expect(s.inputFromGemini).toBe(0);
+    expect(s.inputFromCodex).toBe(0);
     expect(s.inputFromDefault).toBe(0);
+  });
+});
+
+// ---------- input modality provenance ----------
+
+describe("input modality provenance", () => {
+  const ids = (built: ReturnType<typeof buildProviderRegistration>) =>
+    new Map([...built.primaryModels, ...built.lastModels].map((m) => [m.id, m]));
+
+  test("a Codex-sourced image modality registers the model as image-capable", () => {
+    const built = buildProviderRegistration({
+      catalog: [catalogModel("ollama-deepseek-v4.1-flash", {
+        inputModalities: ["text", "image"],
+        inputModalitiesSource: "codex",
+      })],
+      contextOverrides: new Map(),
+      overrides: {},
+    });
+    expect(ids(built).get("ollama-deepseek-v4.1-flash")?.input).toEqual(["text", "image"]);
+    expect(built.stats.inputFromCodex).toBe(1);
+    expect(built.stats.inputFromGemini).toBe(0);
+    expect(built.stats.inputFromDefault).toBe(0);
+  });
+
+  test("a Gemini-sourced declaration is counted separately from Codex", () => {
+    const built = buildProviderRegistration({
+      catalog: [catalogModel("gemini-3-flash", {
+        inputModalities: ["TEXT", "IMAGE"],
+        inputModalitiesSource: "gemini",
+      })],
+      contextOverrides: new Map(),
+      overrides: {},
+    });
+    expect(ids(built).get("gemini-3-flash")?.input).toEqual(["text", "image"]);
+    expect(built.stats.inputFromGemini).toBe(1);
+    expect(built.stats.inputFromCodex).toBe(0);
+  });
+
+  test("no declaration leaves the model text-only and counted as defaulted", () => {
+    const built = buildProviderRegistration({
+      catalog: [catalogModel("kimi-k3", { inputModalities: null })],
+      contextOverrides: new Map(),
+      overrides: {},
+    });
+    expect(ids(built).get("kimi-k3")?.input).toEqual(["text"]);
+    expect(built.stats.inputFromDefault).toBe(1);
+    expect(built.stats.inputFromCodex).toBe(0);
+    expect(built.stats.inputFromGemini).toBe(0);
   });
 });
 

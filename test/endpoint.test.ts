@@ -12,6 +12,7 @@ import type { CatalogModel } from "../src/tier-types.ts";
 const openaiList = (...models: Array<Record<string, unknown>>) => ({ data: models });
 const anthropicList = (...models: Array<Record<string, unknown>>) => ({ data: models });
 const geminiList = (...models: Array<Record<string, unknown>>) => ({ models });
+const codexList = (...models: Array<Record<string, unknown>>) => ({ models });
 
 function catalogModel(id: string, displayName: string | null = null): CatalogModel {
   return {
@@ -76,6 +77,7 @@ describe("mergeCatalogs", () => {
       contextLength: 200_000,
       maxTokens: 32_000,
       inputModalities: ["TEXT", "IMAGE"],
+      inputModalitiesSource: "gemini",
       outputModalities: ["TEXT"],
       thinking: true,
     }]);
@@ -247,6 +249,53 @@ describe("selectEndpoint", () => {
       baseUrlSuffix: "/v1",
       headers: {},
     });
+  });
+});
+
+describe("input modality provenance", () => {
+  test("fills input modalities from the Codex list when Gemini is silent", () => {
+    const result = mergeCatalogs(
+      openaiList({ id: "ollama-deepseek-v4.1-flash" }),
+      null,
+      null,
+      codexList({ slug: "ollama-deepseek-v4.1-flash", input_modalities: ["text", "image"] }),
+    );
+    expect(result.models[0]?.inputModalities).toEqual(["text", "image"]);
+    expect(result.models[0]?.inputModalitiesSource).toBe("codex");
+  });
+
+  test("Gemini wins over Codex when both declare input modalities", () => {
+    const result = mergeCatalogs(
+      openaiList({ id: "gemini-3-flash" }),
+      null,
+      geminiList({ name: "models/gemini-3-flash", supportedInputModalities: ["TEXT", "IMAGE", "VIDEO"] }),
+      codexList({ slug: "gemini-3-flash", input_modalities: ["text", "image"] }),
+    );
+    expect(result.models[0]?.inputModalities).toEqual(["TEXT", "IMAGE", "VIDEO"]);
+    expect(result.models[0]?.inputModalitiesSource).toBe("gemini");
+  });
+
+  test("leaves input modalities null when neither list declares them", () => {
+    const result = mergeCatalogs(
+      openaiList({ id: "unknown-model" }),
+      null,
+      null,
+      codexList({ slug: "unknown-model" }),
+    );
+    expect(result.models[0]?.inputModalities).toBeNull();
+    expect(result.models[0]?.inputModalitiesSource).toBeUndefined();
+  });
+
+  test("ignores a Codex modality declaration for an id absent from the OpenAI catalog", () => {
+    const result = mergeCatalogs(
+      openaiList({ id: "known" }),
+      null,
+      null,
+      codexList({ slug: "codex-only", input_modalities: ["text", "image"] }),
+    );
+    expect(result.models).toHaveLength(1);
+    expect(result.models[0]?.id).toBe("known");
+    expect(result.models[0]?.inputModalities).toBeNull();
   });
 });
 

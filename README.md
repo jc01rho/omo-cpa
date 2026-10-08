@@ -7,7 +7,7 @@ omo(senpi)용 [CLIProxyAPIPlus](https://github.com/jc01rho/CLIProxyAPIPlus) 플�
 ## 하는 일
 
 - **프로바이더 둘.** `cliproxyapi`가 주력입니다. `cliproxyapi-last`는 직접 고를 때만 쓰는 최후수단이고, senpi의 암시적 패밀리 확장에서는 빠집니다. `/login cliproxyapi` 한 번으로 둘 다 인증합니다.
-- **라이브 카탈로그.** OpenAI `GET /v1/models`, Anthropic `GET /v1/models`, Gemini `GET /v1beta/models`, Codex `GET /v1/models?client_version=cpa`를 한 목록으로 합칩니다. 성공한 목록은 기본 5분간 캐시하고, 동시에 들어온 조회는 요청 한 번으로 묶습니다.
+- **라이브 카탈로그.** OpenAI `GET /v1/models`, Anthropic `GET /v1/models`, Gemini `GET /v1beta/models`, Codex `GET /v1/models?client_version=cpa`를 한 목록으로 합칩니다. 성공한 목록은 기본 5분간 캐시하고, 동시에 들어온 조회는 요청 한 번으로 묶습니다. 모델의 입력 모달리티는 Gemini 목록의 `supportedInputModalities`가 있으면 그것을 쓰고, 없으면 Codex 목록의 `input_modalities`로 채웁니다(2026-10-08 실측: 라이브 84개 중 Gemini는 33개만 선언하고 Codex는 84개 전부 선언합니다). 이 값이 없으면 비전 모델이 텍스트 전용으로 등록되어 omo의 `look_at` 후보에서 빠집니다.
 - **티어.** 주력 패밀리는 muse, gpt, claude, gemini, glm, deepseek, grok입니다. id만으로 부족하면 displayName의 머리 단어로 가릅니다. `fable`처럼 별칭만 있는 모델도 이렇게 주력으로 올라갑니다. `free` 표식이 있거나 이미지, 음성, 임베딩 같은 비채팅 모델은 채팅 폴백 체인에서 빠집니다. `/cpa tier`로 저장한 수동 지정은 지금 카탈로그에 있는 모델에만 적용되고, 없는 id는 비활성으로만 보입니다.
 - **시작 꼬리.** `higher-coding`과 `lower-coding`은 목록에서 빠져도 최후수단 꼬리로 남아, 기동 검증이 빈 셀렉터를 보지 않게 합니다.
 - **가격.** 모델별 호출 가격을 [models.dev](https://models.dev) 카탈로그에서 받아 등록하는 모델의 `cost`(USD / 백만 토큰: input, output, cacheRead, cacheWrite)로 브로드캐스트합니다. CPA 서버의 어느 목록에도 가격이 없어서(openai·anthropic·gemini·codex 네 목록과 관리 API 모두 확인) 외부 카탈로그를 씁니다. 모델 id가 가족 없이 낯설거나 공식 벤더 행이 없으면 0으로 두고 추측하지 않습니다. `fable`·`parrot`처럼 별칭만 있는 모델은 displayName으로 정체를 찾아 가격을 붙입니다. 6시간 캐시하고 `/cpa refresh`가 가격도 다시 받습니다.

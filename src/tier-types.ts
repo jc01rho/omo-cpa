@@ -28,6 +28,13 @@ export interface CatalogModel {
   contextLength: number | null;
   maxTokens: number | null;
   inputModalities: string[] | null;
+  /**
+   * Which list supplied `inputModalities`. The Gemini list is the richer one
+   * (it also reports audio and video) and wins whenever it speaks; the Codex
+   * list fills the gap for the models Gemini omits. Undefined means neither
+   * list declared the field and the value stayed null.
+   */
+  inputModalitiesSource?: "gemini" | "codex";
   outputModalities: string[] | null;
   thinking: boolean | null;
   /**

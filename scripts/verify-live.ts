@@ -123,6 +123,16 @@ async function main(): Promise<void> {
   console.log(`catalog: ${result.models.length} live; synthesized aliases=${tiered.catalog.length - result.models.length}`);
   console.log(`tiers: primary=${report.primary.length} last=${report.last.length} chatUnfit=${report.chatUnfit.length}`);
   console.log(`endpoints: openai=${distribution.openai} anthropic=${distribution.anthropic} gemini=${distribution.gemini}`);
+  const modalitySources = { gemini: 0, codex: 0, silent: 0 };
+  for (const model of result.models) {
+    if (model.inputModalities === null) modalitySources.silent++;
+    else if (model.inputModalitiesSource === "codex") modalitySources.codex++;
+    else modalitySources.gemini++;
+  }
+  const registered = [...tiered.primaryModels, ...tiered.lastModels];
+  const imageCapable = registered.filter((model) => model.input.includes("image")).length;
+  console.log(`input modalities: gemini=${modalitySources.gemini} codex=${modalitySources.codex} silent=${modalitySources.silent}`);
+  console.log(`image-capable registered: ${imageCapable}/${registered.length}`);
   console.log(`optional endpoint failures: ${JSON.stringify(result.failures)}`);
   const minimumFamilyCount = familyCounts.length === 0 ? 0 : Math.min(...familyCounts);
   const maximumFamilyCount = familyCounts.length === 0 ? 0 : Math.max(...familyCounts);
