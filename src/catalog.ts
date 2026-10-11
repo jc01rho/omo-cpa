@@ -83,7 +83,9 @@ export async function getCatalog(
         // fresh records still replace their previous metadata.
         const previous = cached?.key === key && cached.result.ok ? cached.result.models : [];
         const ids = new Set(result.models.map(({ id }) => id));
-        result.models.push(...previous.filter(({ id }) => !ids.has(id)));
+        const carried = previous.filter(({ id }) => !ids.has(id));
+        result.models.push(...carried);
+        result.retainedIds = carried.map(({ id }) => id);
         cached = { key, result, fetchedAt: Date.now() };
       }
       return result;

@@ -57,7 +57,7 @@ export interface RefreshModelsContext {
    * Provider-scoped catalog snapshot senpi captured before this refresh phase.
    * Present on the offline restore phase and on every network phase.
    */
-  stored?: { models?: readonly ProviderModel[]; tier?: string } | undefined;
+  stored?: { models?: readonly ProviderModel[]; tier?: string; seen?: Record<string, number> } | undefined;
   publish(entry: { persisted?: string; persist?: unknown }): Promise<void>;
 }
 
@@ -122,6 +122,14 @@ export const PROVIDER_NAME = "cliproxyapi";
 /** Explicit-only provider: its hook removes it from senpi's implicit family expansion. */
 export const LAST_RESORT_PROVIDER_NAME = "cliproxyapi-last";
 export { DEFAULT_BASE_URL };
+
+/**
+ * How long a model stays registered after the live list last named it. CPA
+ * hides aliases while an upstream account is briefly disabled, and a chain that
+ * names a hidden alias fails startup validation; a week bridges those gaps while
+ * a genuinely removed model still drops out.
+ */
+export const STICKY_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * Stable, real CPA models used as the persisted last-resort chain tail.
@@ -245,6 +253,7 @@ function providerConfig(tier: Tier, models: ProviderModel[], apiKey: string | nu
 function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connection: StoredConnection): (context: RefreshModelsContext) => Promise<ProviderModel[]> {
   let currentConnection = connection;
   let generation = 0;
+  let lastSeen: Record<string, number> = {};
   return async (context) => {
     const requestGeneration = ++generation;
     context.signal.throwIfAborted();
@@ -285,8 +294,15 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
     const fetched = await getCatalog(baseUrl, apiKey, { timeoutMs: 15_000, force: context.force });
     context.signal.throwIfAborted();
     if (requestGeneration !== generation) return [...registeredModels];
+    const priorSeen = { ...(context.stored?.seen ?? {}), ...lastSeen };
     if (!fetched.ok) {
-      await publishBestEffort(context, { kind: "catalog-stale", tier, reason: fetched.reason, idCount: registeredModels.length }, registeredModels);
+      await publishBestEffort(context, {
+        kind: "catalog-stale",
+        tier,
+        reason: fetched.reason,
+        idCount: registeredModels.length,
+        seen: seenFor(registeredModels, priorSeen),
+      }, registeredModels);
       return [...registeredModels];
     }
     const store = await loadOverrideStore();
@@ -301,21 +317,45 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
       costs: pricing ? resolveCatalogCosts(pricing, fetched.models) : undefined,
       baseUrl,
     });
-    const models = tier === "primary" ? built.primaryModels : built.lastModels;
+    const now = Date.now();
+    const carried = new Set(fetched.retainedIds ?? []);
+    const nextSeen: Record<string, number> = {};
+    for (const { id } of fetched.models) {
+      nextSeen[id] = carried.has(id) ? priorSeen[id] ?? now : now;
+    }
+    const listed = new Set(built.catalog.map(({ id }) => id));
+    const sticky = readStoredModels(context.stored, tier).filter(({ id }) => {
+      const seenAt = priorSeen[id];
+      return !listed.has(id) && seenAt !== undefined && now - seenAt <= STICKY_TTL_MS;
+    });
+    for (const { id } of sticky) nextSeen[id] = priorSeen[id]!;
+    const models = [...(tier === "primary" ? built.primaryModels : built.lastModels), ...sticky];
     await publishBestEffort(context, {
       kind: "catalog",
       tier,
       idCount: models.length,
       stats: built.stats,
-      mergedAt: Date.now(),
+      mergedAt: now,
+      seen: seenFor(models, nextSeen),
     }, models);
     context.signal.throwIfAborted();
     if (requestGeneration !== generation) return [...registeredModels];
     // registerProvider stores a shallow copy. Preserve this array's identity so
     // the next senpi recomposition starts with these models, not the initial [].
     registeredModels.splice(0, registeredModels.length, ...models);
+    lastSeen = nextSeen;
     return [...registeredModels];
   };
+}
+
+/** Last-listed times restricted to one tier's models, for its persisted entry. */
+function seenFor(models: readonly ProviderModel[], seen: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const { id } of models) {
+    const at = seen[id];
+    if (at !== undefined) out[id] = at;
+  }
+  return out;
 }
 
 export interface StoredConnection {

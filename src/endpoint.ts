@@ -35,6 +35,8 @@ export type CatalogFetchResult =
       models: CatalogModel[];
       issues: CatalogIssue[];
       failures: Partial<Record<CatalogListEndpoint, string>>;
+      /** Ids carried over from an earlier fetch because this round did not list them. */
+      retainedIds?: string[];
     }
   | {
       ok: false;

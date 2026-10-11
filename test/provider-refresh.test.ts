@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
 import { clearCatalogCache } from "../src/catalog.ts";
 import { registerCpaProvider } from "../src/provider.ts";
 import { clearPricingCache } from "../src/pricing.ts";
-import type { ProviderConfig, RefreshModelsContext } from "../src/provider.ts";
+import type { ProviderConfig, ProviderModel, RefreshModelsContext } from "../src/provider.ts";
 
 let ids: string[];
 let status: number;
@@ -307,6 +307,86 @@ test("a failed first fetch does not invent a usable catalog", async () => {
   status = 503;
   expect(await refresh()).toEqual([]);
   expect(registeredIds()).toEqual([]);
+});
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** A new omo process: no catalog cache and fresh provider closures. */
+function coldStart(): ProviderConfig[] {
+  clearCatalogCache();
+  const fresh: ProviderConfig[] = [];
+  registerCpaProvider({ registerProvider: (_id: string, config: ProviderConfig) => fresh.push(config) });
+  return fresh;
+}
+
+type Persisted = { models: ProviderModel[]; tier: string; seen?: Record<string, number> };
+
+/** Refresh each provider with its own stored entry and collect what it persists. */
+async function refreshEach(list: ProviderConfig[], stored: (Persisted | undefined)[] = []) {
+  const persisted: (Persisted | undefined)[] = [];
+  const models = await Promise.all(list.map((config, index) => config.refreshModels!({
+    ...context({ force: true }),
+    stored: stored[index],
+    publish: async (publication) => { persisted[index] = publication.persist as Persisted | undefined; },
+  })));
+  return { ids: models.flat().map(({ id }) => id), persisted };
+}
+
+// The live list drops aliases while an upstream account is briefly disabled.
+// A cold start used to persist that gap, and every chain naming the alias then
+// failed startup validation until the alias was listed again.
+test("a cold start keeps a recently listed model the live list briefly omits", async () => {
+  const first = await refreshEach(configs);
+  expect(first.ids).toContain("maxrouter-gpt-6-astra");
+  ids = ["gpt-6-sol"];
+  const second = await refreshEach(coldStart(), first.persisted);
+  expect(second.ids).toContain("maxrouter-gpt-6-astra");
+  expect(second.ids).toContain("gpt-6-sol");
+});
+
+test("a model still listed in another tier is never carried into this one", async () => {
+  const first = await refreshEach(configs);
+  const [primaryEntry, lastEntry] = first.persisted;
+  const moved = primaryEntry?.models.find(({ id }) => id === "gpt-6-sol");
+  if (!moved || !lastEntry) throw new Error("fixture expects gpt-6-sol in primary");
+  const stale: (Persisted | undefined)[] = [
+    primaryEntry,
+    { ...lastEntry, models: [...lastEntry.models, moved], seen: { ...lastEntry.seen, "gpt-6-sol": Date.now() } },
+  ];
+  const lists = await Promise.all(coldStart().map(async (config, index) => (await config.refreshModels!({
+    ...context({ force: true }),
+    stored: stale[index],
+  })).map(({ id }) => id)));
+  expect(lists[0]).toContain("gpt-6-sol");
+  expect(lists[1]).not.toContain("gpt-6-sol");
+});
+
+test("a model unlisted for longer than the sticky TTL is dropped", async () => {
+  const first = await refreshEach(configs);
+  const aged = first.persisted.map((entry) => entry && {
+    ...entry,
+    seen: Object.fromEntries(Object.keys(entry.seen ?? {}).map((id) => [id, Date.now() - 8 * DAY_MS])),
+  });
+  ids = ["gpt-6-sol"];
+  const second = await refreshEach(coldStart(), aged);
+  expect(second.ids).not.toContain("maxrouter-gpt-6-astra");
+  expect(second.ids).toContain("gpt-6-sol");
+});
+
+test("an in-process carryover does not refresh a model's last-listed time", async () => {
+  const listedAt = Date.UTC(2026, 9, 1);
+  try {
+    setSystemTime(new Date(listedAt));
+    await refreshEach(configs);
+    setSystemTime(new Date(listedAt + DAY_MS));
+    ids = ["gpt-6-sol"];
+    const later = await refreshEach(configs);
+    const seen = Object.assign({}, ...later.persisted.map((entry) => entry?.seen ?? {}));
+    expect(seen["maxrouter-gpt-6-astra"]).toBe(listedAt);
+    expect(seen["gpt-6-sol"]).toBe(listedAt + DAY_MS);
+  } finally {
+    setSystemTime();
+  }
 });
 
 test("published store entries carry a models array for senpi's restore path", async () => {
