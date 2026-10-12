@@ -55,6 +55,37 @@ describe("extension registration", () => {
   });
 });
 
+describe("session start", () => {
+  // Ordinary sessions only restore the stored catalog, so the store never learned
+  // newly listed or briefly hidden models and chains kept failing validation.
+  test("asks the model registry for a network refresh of both CPA providers", async () => {
+    const { pi, ctx, handlers } = mockPi();
+    const calls: unknown[] = [];
+    const refreshed = Promise.withResolvers<void>();
+    const sessionCtx = {
+      ...ctx,
+      modelRegistry: {
+        refresh: async (options: unknown) => {
+          calls.push(options);
+          refreshed.resolve();
+          return { aborted: false, errors: new Map() };
+        },
+      },
+    };
+    omoCpa(pi, { loadProviderData: async () => ({ catalog: [catalogModel("gpt-6-sol")], contextOverrides: new Map() }) });
+    await handlers.get("session_start")!({}, sessionCtx);
+    await refreshed.promise;
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ allowNetwork: true, providers: ["cliproxyapi", "cliproxyapi-last"] });
+  });
+
+  test("a registry without refresh does not break session start", async () => {
+    const { pi, ctx, handlers } = mockPi();
+    omoCpa(pi, { loadProviderData: async () => ({ catalog: [catalogModel("gpt-6-sol")], contextOverrides: new Map() }) });
+    await expect(handlers.get("session_start")!({}, ctx)).resolves.toBeUndefined();
+  });
+});
+
 describe("/cpa tier", () => {
   test("promote persists the override and immediately re-registers the model in primary", async () => {
     const dir = join(tmpdir(), `omo-cpa-extension-${crypto.randomUUID()}`);

@@ -141,6 +141,16 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
   pi.on("session_start", async (_event: unknown, ctx: any) => {
     // Never block session startup on the network.
     void (async () => {
+      // senpi's ordinary session open only restores the stored catalog, so the
+      // store froze at the last /login and missed newly listed or briefly hidden
+      // models. A network refresh of our two providers updates it every session.
+      try {
+        await ctx?.modelRegistry?.refresh?.({
+          allowNetwork: true,
+          providers: [PROVIDER_NAME, LAST_RESORT_PROVIDER_NAME],
+          signal: AbortSignal.timeout(30_000),
+        });
+      } catch { /* best effort: the restored catalog stays usable */ }
       await refresh();
       setStatus(ctx);
       // The tier split is derived from the live catalog, so a model omo declares
