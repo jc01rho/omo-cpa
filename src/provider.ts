@@ -329,7 +329,18 @@ function makeRefreshModels(tier: Tier, registeredModels: ProviderModel[], connec
       return !listed.has(id) && seenAt !== undefined && now - seenAt <= STICKY_TTL_MS;
     });
     for (const { id } of sticky) nextSeen[id] = priorSeen[id]!;
-    const models = [...(tier === "primary" ? built.primaryModels : built.lastModels), ...sticky];
+    // Some windows come from one list alone (grok's only from the Codex list). When that list
+    // misses a round the model falls to the 8192 default, which is too small to start a session,
+    // and the store spreads it to every later process. Keep the last window the server reported.
+    const known = new Map([...readStoredModels(context.stored, tier), ...registeredModels].map((model) => [model.id, model]));
+    const unreported = new Set(built.catalog.filter(({ contextLength }) => contextLength === null).map(({ id }) => id));
+    const keepKnownWindow = (model: ProviderModel): ProviderModel => {
+      const prior = known.get(model.id);
+      if (!unreported.has(model.id) || model.contextWindow !== DEFAULT_CONTEXT_WINDOW) return model;
+      if (!prior || !(prior.contextWindow > DEFAULT_CONTEXT_WINDOW)) return model;
+      return { ...model, contextWindow: prior.contextWindow, maxTokens: prior.maxTokens };
+    };
+    const models = [...(tier === "primary" ? built.primaryModels : built.lastModels).map(keepKnownWindow), ...sticky];
     await publishBestEffort(context, {
       kind: "catalog",
       tier,
