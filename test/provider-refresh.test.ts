@@ -5,6 +5,7 @@ import { clearPricingCache } from "../src/pricing.ts";
 import type { ProviderConfig, ProviderModel, RefreshModelsContext } from "../src/provider.ts";
 
 let ids: string[];
+let codexWindow: number | undefined;
 let status: number;
 let requests: number;
 let gate: ReturnType<typeof Promise.withResolvers<void>> | undefined;
@@ -25,6 +26,7 @@ beforeEach(() => {
   oldPricingUrl = process.env["OMO_CPA_PRICING_URL"];
   process.env["OMO_CPA_PRICING_URL"] = pricingServer.url.href;
   ids = ["gpt-6-sol", "maxrouter-gpt-6-astra"];
+  codexWindow = undefined;
   status = 200;
   requests = 0;
   gate = undefined;
@@ -38,7 +40,7 @@ beforeEach(() => {
       if (status !== 200) return new Response("unavailable", { status });
       const url = new URL(request.url);
       return Response.json(url.search
-        ? { models: ids.map((slug) => ({ slug })) }
+        ? { models: ids.map((slug) => ({ slug, ...(codexWindow ? { context_window: codexWindow } : {}) })) }
         : url.pathname.includes("v1beta")
           ? { models: ids.map((id) => ({ name: `models/${id}` })) }
           : { data: ids.map((id) => ({ id })) });
@@ -342,6 +344,22 @@ test("a cold start keeps a recently listed model the live list briefly omits", a
   const second = await refreshEach(coldStart(), first.persisted);
   expect(second.ids).toContain("maxrouter-gpt-6-astra");
   expect(second.ids).toContain("gpt-6-sol");
+});
+
+// grok-4.7's window comes from the Codex list alone. One round without it registered the model
+// at 8192 tokens on every machine, and `--model cliproxyapi/grok-4.7` refused to start.
+test("a cold start keeps the last reported window when no list reports one", async () => {
+  codexWindow = 500_000;
+  const first = await refreshEach(configs);
+  const window = (persisted: (Persisted | undefined)[]) =>
+    persisted.flatMap((entry) => entry?.models ?? []).find(({ id }) => id === "gpt-6-sol")?.contextWindow;
+  expect(window(first.persisted)).toBe(500_000);
+  codexWindow = undefined;
+  const second = await refreshEach(coldStart(), first.persisted);
+  expect(window(second.persisted)).toBe(500_000);
+  // Without any earlier report the default still applies.
+  const third = await refreshEach(coldStart());
+  expect(window(third.persisted)).toBe(8192);
 });
 
 test("a model still listed in another tier is never carried into this one", async () => {
