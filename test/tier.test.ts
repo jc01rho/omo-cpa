@@ -577,6 +577,23 @@ describe("classify — degenerate catalogs", () => {
 // Overrides — the pure half. Both directions must work.
 // ---------------------------------------------------------------------------
 describe("classify — user overrides", () => {
+  test("a family override demotes every model of that family, and a per-id override still wins", () => {
+    const catalog = [
+      model("gpt-6-astra"),
+      model("maxrouter-gpt-6-luna"),
+      model("gptreal", { displayName: "GPT 5.6 Sol" }),
+      model("gpt-5.5"),
+      model("claude-sonnet-5"),
+    ];
+    const ds = classify(catalog, { "family:gpt": "last", "gpt-5.5": "primary" });
+    expect(decisionFor(ds, "gpt-6-astra").tier).toBe("last");
+    expect(decisionFor(ds, "maxrouter-gpt-6-luna").tier).toBe("last");
+    expect(decisionFor(ds, "gptreal").tier).toBe("last");
+    expect(decisionFor(ds, "gpt-5.5").tier).toBe("primary");
+    expect(decisionFor(ds, "claude-sonnet-5").tier).toBe("primary");
+    expect(buildTierReport(catalog, { "family:gpt": "last" }).inactiveOverrides).toEqual([]);
+  });
+
   test("promotes a last-resort model to primary", () => {
     const catalog = [model("upstage/solar-pro4")];
     expect(tierOf(catalog, "upstage/solar-pro4")).toBe("last");

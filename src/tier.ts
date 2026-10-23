@@ -201,7 +201,20 @@ export function classify(
   overrides: OverrideMap = {},
   upstreamByAlias: Readonly<Record<string, string>> = {},
 ): TierDecision[] {
-  return models.map((m) => classifyOne(m, overrides[m.id], upstreamByAlias[m.id] ?? m.upstreamModelId));
+  return models.map((m) => {
+    const upstream = upstreamByAlias[m.id] ?? m.upstreamModelId;
+    return classifyOne(m, overrides[m.id] ?? familyOverride(m, upstream, overrides), upstream);
+  });
+}
+
+/** Prefix of an override key that applies to a whole family, e.g. `family:gpt`. */
+export const FAMILY_OVERRIDE_PREFIX = "family:";
+
+/** A per-id override wins; otherwise a `family:<name>` override covers every model of that family. */
+function familyOverride(m: CatalogModel, upstreamId: string | undefined, overrides: OverrideMap): Tier | undefined {
+  const id = upstreamId ?? m.id;
+  const family = familyFromId(id) ?? familyFromDisplayName(upstreamId === undefined ? m.displayName : upstreamId);
+  return family ? overrides[`${FAMILY_OVERRIDE_PREFIX}${family}`] : undefined;
 }
 
 function decide(id: string, tier: Tier, family: PrimaryFamily | null, reason: string, overridden: boolean): TierDecision {
@@ -293,7 +306,7 @@ export function buildTierReport(
   const decisions = classify(models, overrides, upstreamByAlias);
   const present = new Set(models.map((m) => m.id));
   const inactiveOverrides: InactiveOverride[] = Object.entries(overrides)
-    .filter(([id]) => !present.has(id))
+    .filter(([id]) => !id.startsWith(FAMILY_OVERRIDE_PREFIX) && !present.has(id))
     .map(([id, tier]) => ({ id, tier, reason: "현재 카탈로그에 없는 모델 — 설정은 보존됨 (비활성)" }));
 
   // An explicit user override keeps a model routable even when the automatic
