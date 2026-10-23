@@ -128,7 +128,19 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
 
   function setStatus(ctx: any): void {
     try {
-      ctx?.ui?.setStatus?.(STATUS_KEY, renderStatusLine(state.tiers, state.health.snapshot()));
+      const line = renderStatusLine(state.tiers, state.health.snapshot());
+      ctx?.ui?.setStatus?.(STATUS_KEY, line);
+      // The OmO desktop host ignores setStatus over RPC but renders widgets with
+      // action buttons, so RPC sessions get the same line as a widget.
+      if (ctx?.mode === "rpc") {
+        ctx?.ui?.setWidget?.(STATUS_KEY, [line], {
+          placement: "belowEditor",
+          actions: [
+            { label: "점검", command: "/cpa" },
+            { label: "새로고침", command: "/cpa refresh" },
+          ],
+        });
+      }
     } catch { /* status is cosmetic */ }
   }
 

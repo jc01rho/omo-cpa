@@ -55,6 +55,34 @@ describe("extension registration", () => {
   });
 });
 
+describe("desktop widget", () => {
+  // The OmO desktop host drops setStatus over RPC and only renders widgets.
+  function run(mode: string) {
+    const { pi, handlers } = mockPi();
+    omoCpa(pi);
+    const statuses: unknown[] = [];
+    const widgets: unknown[][] = [];
+    const ctx = { mode, ui: { notify: () => {}, setStatus: (...a: unknown[]) => statuses.push(a), setWidget: (...a: unknown[]) => widgets.push(a) } };
+    handlers.get("model_select")!({}, ctx);
+    return { statuses, widgets };
+  }
+
+  test("rpc mode mirrors the status line into a widget with /cpa actions", () => {
+    const { statuses, widgets } = run("rpc");
+    expect(widgets).toHaveLength(1);
+    const [key, lines, opts] = widgets[0] as [string, string[], any];
+    expect(key).toBe("omo-cpa");
+    expect(lines).toEqual([(statuses[0] as unknown[])[1] as string]);
+    expect(opts.actions.map((a: any) => a.command)).toEqual(["/cpa", "/cpa refresh"]);
+  });
+
+  test("tui mode keeps only the status line", () => {
+    const { statuses, widgets } = run("tui");
+    expect(statuses).toHaveLength(1);
+    expect(widgets).toHaveLength(0);
+  });
+});
+
 describe("session start", () => {
   // Ordinary sessions only restore the stored catalog, so the store never learned
   // newly listed or briefly hidden models and chains kept failing validation.
