@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { hostname } from "node:os";
 import omoCpa from "../src/extension.ts";
 import { loadOverrideStore } from "../src/tier.ts";
 import { MANAGEMENT_KEY_FILE, readManagementKey } from "../src/management-key.ts";
@@ -72,7 +73,7 @@ describe("desktop widget", () => {
     expect(widgets).toHaveLength(1);
     const [key, lines, opts] = widgets[0] as [string, string[], any];
     expect(key).toBe("omo-cpa");
-    expect(lines).toEqual([(statuses[0] as unknown[])[1] as string]);
+    expect(lines).toEqual([`${hostname().split(".")[0]} · ${(statuses[0] as unknown[])[1] as string}`]);
     expect(opts.actions.map((a: any) => a.command)).toEqual(["/cpa", "/cpa refresh"]);
   });
 

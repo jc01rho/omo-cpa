@@ -53,6 +53,7 @@ import { fetchUsage } from "./usage.ts";
 import { renderReport, renderStatusLine } from "./render.ts";
 import type { TierCounts } from "./render.ts";
 import { redact } from "./redact.ts";
+import { hostname } from "node:os";
 import type { CpaConfig } from "./types.ts";
 
 const STATUS_KEY = "omo-cpa";
@@ -131,9 +132,10 @@ export default function omoCpa(pi: any, options: OmoCpaOptions = {}): void {
       const line = renderStatusLine(state.tiers, state.health.snapshot());
       ctx?.ui?.setStatus?.(STATUS_KEY, line);
       // The OmO desktop host ignores setStatus over RPC but renders widgets with
-      // action buttons, so RPC sessions get the same line as a widget.
+      // action buttons, so RPC sessions get the same line as a widget. Each
+      // desktop environment runs its own engine, so the line names its machine.
       if (ctx?.mode === "rpc") {
-        ctx?.ui?.setWidget?.(STATUS_KEY, [line], {
+        ctx?.ui?.setWidget?.(STATUS_KEY, [`${hostname().split(".")[0]} · ${line}`], {
           placement: "belowEditor",
           actions: [
             { label: "점검", command: "/cpa" },
